@@ -1,0 +1,31 @@
+RS-485
+Идея в том, чтобы при старте все рассылают сообщения discovery.
+Чтобы все устройства знали кто есть вокруг, т.е. мастера нет, все равнозначные.
+Каждое устройство шлет все изменения в шину, т.е. событие и состояние и входов и выходов
+
+Протокол
+M T LL SSSSSS DDDDDD II P...
+M - magic, always 0xA5
+T - type msg_type_t;
+LL - payload len
+SS - source address
+DD - destination address, FF for broadcast
+II - message id, autoincrement    
+PP - payload, can be null
+
+Конфиг должен храниться на каждом устройстве
+
+
+grep -r --include="*.txt" "ваш_текст" .
+
+TODO
++ переподключение к вебсокету
+- на новом не работает индикация, но работает реле. GPIO0 не хочет быть 0
++ на старом не работает HW
+- на соседнюю ноду события о нажатиях уходят кривые
+  I (724169) RS485: EVENT received. Input 180 Event unknown event
+- не уходят или некорректные на севрер события
+- на старом не определяется выход по нажатию на кнопку
+  I (10790169) HARDWARE: processInput. orig 3, corrected 255
+  E (10790169) HARDWARE: No input found in config
+- проверить события с удаленных нод и отправку на фронт  

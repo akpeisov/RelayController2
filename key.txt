@@ -1,0 +1,5 @@
+generate private key
+openssl genrsa -out jwtRS256.key 2048
+
+generate public key
+openssl rsa -in jwtRS256.key -pubout -outform PEM -out jwtRS256.key.pub
