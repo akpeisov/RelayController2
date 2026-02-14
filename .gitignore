@@ -1,4 +1,4 @@
-.cache/*
+.cache/
 dependencies.lock
 managed_components/
 *.key
