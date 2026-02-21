@@ -781,17 +781,25 @@ void setOutput(action_cfg_t *act) {
             case ACT_ALLOFF:
                 // TODO : realize it
                 break;
-            default:            
+            default:
+                break;            
         }      
         
+        // publish to core
         io_event_t e;
         e.io_type = 0;
         e.io_id = act->output_id;
         e.state = output->is_on;
-        e.timer = output->timer;
-        //e.event = output->is_on; //act->action;
+        e.timer = output->timer;        
         e.node = act->target_node;
         ioevent(e);
+
+        // sending current state to bus
+        node_io_event_t ioEvnt;
+        ioEvnt.io_type = 0;
+        ioEvnt.io_id = output->id;
+        ioEvnt.state = output->is_on;       
+        sendNodeEvent(ioEvnt, getInputs(), getOutputs());
     } else {
         // remote node
         // TODO : продумать как послать состояние выхода удаленной ноды
@@ -897,19 +905,21 @@ void processInput(uint8_t input_id, uint8_t event_id) {
     }
     
     // process events
-    if (event != EVT_UNKNOWN) {
-        // publish event
-        input_event_t evnt;
-        evnt.input_id = inputId;
-        evnt.event = event;
-        sendNodeEvent(evnt); // button pressed or input on/off
+    if (event != EVT_UNKNOWN) {        
         // publish core only for switches and inverted switches
         if (input->type == INPUT_SWITCH || input->type == INPUT_SWITCH_INV) {
+            // sending current state to bus
+            node_io_event_t ioEvnt;
+            ioEvnt.io_type = 1;
+            ioEvnt.io_id = inputId;
+            ioEvnt.state = event_id;        
+            sendNodeEvent(ioEvnt, getInputs(), getOutputs());
+            
+            // publish to core
             io_event_t e;
             e.io_type = 1;
             e.io_id = inputId;
-            e.state = event_id;
-            //e.event = event;
+            e.state = event_id;            
             memcpy(e.node.mac, self_node, 6);
             ioevent(e);
         }
@@ -1059,22 +1069,22 @@ void initHardware() {
     xTaskCreate(&hwTask, "hwTask", 4096, NULL, 5, NULL);    
 }
 
-void testTask() {
-    vTaskDelay(4000 / portTICK_PERIOD_MS);
-    while (1) {
-        // action_cfg_t ac;
-        // ac.action = ACT_TOGGLE;
-        // ac.output_id = 0;
-        // #define TRG  ((node_uid_t){ .mac = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff} })
-        // ac.target_node = TRG;
-        // sendNodeAction(&ac);
-        input_event_t ev;
-        ev.input_id = 0;
-        ev.event = EVT_TOGGLE;
-        sendNodeEvent(ev);
-        vTaskDelay(10000 / portTICK_PERIOD_MS);
-    }    
-}
+// void testTask() {
+//     vTaskDelay(4000 / portTICK_PERIOD_MS);
+//     while (1) {
+//         // action_cfg_t ac;
+//         // ac.action = ACT_TOGGLE;
+//         // ac.output_id = 0;
+//         // #define TRG  ((node_uid_t){ .mac = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff} })
+//         // ac.target_node = TRG;
+//         // sendNodeAction(&ac);
+//         input_event_t ev;
+//         ev.input_id = 0;
+//         ev.event = EVT_TOGGLE;
+//         sendNodeEvent(ev);
+//         vTaskDelay(10000 / portTICK_PERIOD_MS);
+//     }    
+// }
 
 void registerIOHandler(TIOEvent event) {
     ioevent = event;

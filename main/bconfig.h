@@ -3,6 +3,7 @@
 
 #include "esp_system.h"
 #include <stdint.h>
+#include <sys/types.h>
 #define CFG_MAGIC 0x524C5953  // "RLYS"
 #define CFG_VERSION 1
 //#define LOCAL_NODE  ((node_uid_t){ .mac = {0, 0, 0, 0, 0, 0} })
@@ -77,6 +78,12 @@ typedef struct __attribute__((packed)) {
 } input_event_t;
 
 typedef struct __attribute__((packed)) {
+    uint8_t io_id;
+    uint8_t io_type; // input or output   
+    uint8_t state;
+} node_io_event_t;
+
+typedef struct __attribute__((packed)) {
     event_type_t event;
     uint8_t actions_count;
     uint16_t actions_offset;
@@ -131,6 +138,8 @@ typedef struct {
     int64_t last_seen;
     uint16_t outputStates;
     uint16_t inputStates;
+    bool online;
+    bool sent;
 } node_t;
 
 typedef struct {
@@ -149,6 +158,7 @@ typedef struct __attribute__((packed)) {
     bool state;
     node_uid_t node;
     uint16_t timer; // for timed output
+    action_type_t action;
 } io_event_t;
 
 extern io_cfg_t *gCfg;
@@ -165,14 +175,14 @@ char* strNode(node_uid_t *n);
 uint16_t getConfigVersion();
 void updateBConfig(nodes_cfg_t *cfg);
 void updateLocalConfig(const io_cfg_t *newCfg);
-
-#define MAX_NEIGHBORS 10
+bool isOldControllerType();
 
 typedef struct __attribute__((packed)) {
     uint8_t mac[6];
     uint8_t model;
     uint16_t outputStates;
     uint16_t inputStates;
+    bool online;
 } neighbor_t;
 
 typedef struct __attribute__((packed)) {
@@ -188,7 +198,7 @@ typedef struct __attribute__((packed)) {
     uint16_t outputStates;
     uint16_t inputStates;
     uint8_t  neighborCount;
-    neighbor_t neighbors[MAX_NEIGHBORS];
+    neighbor_t neighbors[];
 } device_info_hdr_t;
 
 #endif // BCONFIG_H

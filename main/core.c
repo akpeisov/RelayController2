@@ -30,35 +30,27 @@ static bool wsConnected = false;
 extern const char jwt_start[] asm("_binary_jwt_pem_start");
 extern const char jwt_end[] asm("_binary_jwt_pem_end");
 
-void IOhandler(io_event_t event) {
-    ESP_LOGI(TAG, "IOhandler typeIO %d io %d state %s, node %s", 
-             event.io_type, event.io_id, event.state ? "on" : "off", strNode(&event.node));
-    // input or output event happened. Publish it to cloud and local network
-    // AA 0E NODE TT ID SS TMR
-    uint8_t buflen = 12;
-    uint8_t buffer[buflen];    
-    buffer[0] = 'E'; // event
-    memcpy(buffer+1, &event.node.mac, 6);
-    buffer[7] = event.io_type;
-    buffer[8] = event.io_id;
-    //buffer[9] = event.event;        
-    buffer[9] = event.state;
-    if (event.io_type == 0) { 
-        buffer[10] = event.timer >> 8;
-        buffer[11] = event.timer & 0xFF;
-    } else {
-        buflen = 10;
-    }
-    WSSendPacket(buffer, buflen);
+void sendNewNode(uint8_t *mac, model_t model, uint16_t outputStates, uint16_t inputStates) {
+    uint8_t buffer[13];
+    buffer[0] = 'N'; // new node
+    memcpy(buffer+1, mac, 6);
+    buffer[7] = model;
+    buffer[8] = outputStates >> 8;
+    buffer[9] = outputStates & 0xFF;
+    buffer[10] = inputStates >> 8;
+    buffer[11] = inputStates & 0xFF;
+    WSSendPacket(buffer, 12);
 }
 
+/*
 void sendInfo() {
     if (!wsConnected) {
         return;
     }
 
     uint8_t buffer[256];
-    uint8_t *p = buffer;
+    buffer[0] = 'I'; // info packet
+    uint8_t *p = buffer + 1;
     
     device_info_hdr_t hdr = {0};
     getMac(hdr.mac);    
@@ -78,13 +70,14 @@ void sendInfo() {
 
     memcpy(p, &hdr, sizeof(hdr));
     p += sizeof(hdr);
-
+ESP_LOGI(TAG, "info. neighbor count %d", hdr.neighborCount);
     for (int i = 0; i < hdr.neighborCount; i++) {
         neighbor_t n;
         memcpy(n.mac, nodes[i].mac, 6);
         n.model = nodes[i].model;
         n.outputStates = nodes[i].outputStates;
         n.inputStates = nodes[i].inputStates;
+        n.online = nodes[i].online;
         memcpy(p, &n, sizeof(n));
         p += sizeof(n);
     }
@@ -92,6 +85,69 @@ void sendInfo() {
     
     WSSendPacket(buffer, packetSize);
 }
+    */
+
+void sendInfo() {
+    if (!wsConnected) return;
+
+    uint8_t buffer[512];
+    buffer[0] = 'I';
+
+    uint8_t *p = buffer + 1;
+    device_info_hdr_t hdr = {0};
+
+    getMac(hdr.mac);
+    hdr.freeMemory = esp_get_free_heap_size();
+    hdr.uptimeRaw = getUpTimeRaw();
+    hdr.version = getConfigVersion();
+    hdr.curdate = time(NULL);
+    hdr.wifiRSSI = getRSSI();
+    hdr.ethIP = ethIp;
+    hdr.wifiIP = wifiIp;
+
+    snprintf(hdr.resetReason,
+             sizeof(hdr.resetReason),
+             "%s",
+             espResetReason());
+
+    hdr.outputStates = getOutputs();
+    hdr.inputStates = getInputs();
+
+    node_t *nodes;
+    hdr.neighborCount = getNodes(&nodes);
+
+    size_t hdrSize = offsetof(device_info_hdr_t, neighbors);
+
+    size_t required =
+        1 +
+        hdrSize +
+        hdr.neighborCount * sizeof(neighbor_t);
+
+    if (required > sizeof(buffer)) {
+        ESP_LOGE(TAG, "Info packet too big!");
+        return;
+    }
+
+    memcpy(p, &hdr, hdrSize);
+    p += hdrSize;
+
+    for (int i = 0; i < hdr.neighborCount; i++) {
+        neighbor_t *n = (neighbor_t *)p;
+        memcpy(n->mac, nodes[i].mac, 6);
+        n->model = nodes[i].model;
+        n->outputStates = nodes[i].outputStates;
+        n->inputStates = nodes[i].inputStates;
+        n->online = nodes[i].online;
+        p += sizeof(neighbor_t);
+    }
+
+    size_t packetSize = p - buffer;
+
+    ESP_LOGI(TAG, "info. neighbor count %d", hdr.neighborCount);
+
+    WSSendPacket(buffer, packetSize);
+}
+
 
 char *loadJwtCert() {
     char *jwt_key = NULL;
@@ -124,22 +180,19 @@ char *getJWTToken() {
     cJSON_AddStringToObject(payload, "mac", getMacStr());
     cJSON_AddStringToObject(payload, "model", getControllerTypeText(controllerType));
     char *payload_str = cJSON_PrintUnformatted(payload);
-    char *token = malloc(512);
     char *cert = loadJwtCert();
     if (cert==NULL) {
         ESP_LOGE(TAG, "Failed to load JWT certificate");
         cJSON_Delete(payload);
         free(payload_str);
         return NULL;
-    }
-    //generate_jwtRS256(payload_str, token, cert);
+    }    
     size_t tokenLen = 512;
-    if (generate_jwt_rs2562(payload_str,
-                             cert,
-                             token,
-                             tokenLen) != ESP_OK) {
-                                token = NULL;
-                             }
+    char *token = malloc(tokenLen);
+    if (generate_jwt_rs2562(payload_str, cert, token, tokenLen) != ESP_OK) {
+        free(token);
+        token = NULL;
+    }
     free(cert);            
     cJSON_Delete(payload);
     free(payload_str);
@@ -240,16 +293,102 @@ void processServerHello(const uint8_t *data, uint32_t len) {
     sendHello();
 }
 
-static void wsEvent(ws_event_id_t event, const uint8_t *data, uint32_t len) {
+static void setOnline(bool online) {
+    wsConnected = online;
+    sendNodeStatus(online);
+}
+
+void sendEvent(uint8_t* mac, uint8_t io_type, uint8_t io_id, bool state, uint16_t timer, uint16_t outputStates, uint16_t inputStates) {
+    // AA 0E NODE TT ID SS TMR ISlow IShi OSlow OShi
+    // TT type SS state TMR of output    
+    uint8_t buflen = 16;
+    uint8_t buffer[buflen];    
+    buffer[0] = 'E'; // event
+    memcpy(buffer+1, mac, 6);
+    buffer[7] = io_type;
+    buffer[8] = io_id;    
+    buffer[9] = state;
+    buffer[10] = outputStates & 0xFF; 
+    buffer[11] = (outputStates >> 8) & 0xFF; 
+    buffer[12] = inputStates & 0xFF;
+    buffer[13] = (inputStates >> 8) & 0xFF; 
+    // TODO: io states, timer optional if io_type is output
+    if (io_type == 0) { 
+        buffer[14] = timer >> 8;
+        buffer[15] = timer & 0xFF;
+    } else {
+        buflen = 14;
+    }
+    WSSendPacket(buffer, buflen);
+}
+
+void IOhandler(io_event_t event) {
+    ESP_LOGI(TAG, "IOhandler typeIO %d io %d state %s, node %s", 
+             event.io_type, event.io_id, event.state ? "on" : "off", strNode(&event.node));
+    // input or output event happened. Publish it to cloud and local network
+    sendEvent(event.node.mac, event.io_type, event.io_id, event.state, event.timer, getOutputs(), getInputs());
+    // AA 0E NODE TT ID SS TMR
+    // uint8_t buflen = 12;
+    // uint8_t buffer[buflen];    
+    // buffer[0] = 'E'; // event
+    // memcpy(buffer+1, &event.node.mac, 6);
+    // buffer[7] = event.io_type;
+    // buffer[8] = event.io_id;
+    // //buffer[9] = event.event;        
+    // buffer[9] = event.state;
+    // if (event.io_type == 0) { 
+    //     buffer[10] = event.timer >> 8;
+    //     buffer[11] = event.timer & 0xFF;
+    // } else {
+    //     buflen = 10;
+    // }
+    // WSSendPacket(buffer, buflen);
+
+    // сюда прилетают сообщения об изменении соостояния IO от HW. Нужно отправить на сервере и по 485
+    // и надо еще от шины. и тут решить отправлять за других или нет
+}
+
+void BusHandler(bus_event_t event) {
+    // может прилететь событие онлайн/оффлан, новой ноды, а может изменения состояния IO других нод
+    // BEVT_NODESTATUS - изменение статуса подключения к серверу ноды
+    // BEVT_NEWNODE - добавление новой ноды вместе со статусами IO
+    // BEVT_ACTION - изменение состояния выхода текущей ноды. 
+    // Принять пакет, сделать действие, получить актуальное состояние выхода и отправить его на сервер. Или лучше отдельно отслеживать изменение состояний изменения IO и отправлять на сервер...
+    switch (event.event) {
+        case BEVT_NEWNODE:
+            sendNewNode(event.target_node, event.model, event.outputStates, event.inputStates);
+            break;        
+        case BEVT_NODESTATUS:            
+            break;
+        case BEVT_ACTION:            
+            action_cfg_t act;
+            act.output_id = event.io_event.io_id;
+            act.action = event.io_event.action;
+            act.target_node = event.io_event.node;
+            setOutput(&act);
+        case BEVT_IOEVENT:
+            if (!event.online) {
+                // only for offline
+                sendEvent(event.target_node, event.io_event.io_type, event.io_event.io_id,
+                    event.io_event.state, event.io_event.timer, event.outputStates, event.inputStates);                
+            }
+            break;
+        default:
+            break;
+    }
+
+    // TODO : отправка за оффлайн ноду
+}
+
+static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
     switch (event) {
         case WS_EVENT_CONNECTED:
             ESP_LOGI(TAG, "WebSocket connected");
-            // send hello
-            //sendHello();
+            // waiting for hello message from server with timestamp, then we will set time and send HELLO with JWT token
             break;
         case WS_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "WebSocket disconnected");
-            wsConnected = false;
+            setOnline(false);
             break;
         case WS_EVENT_DATA:
             ESP_LOGI(TAG, "WebSocket data received. Len %d", len);
@@ -261,11 +400,11 @@ static void wsEvent(ws_event_id_t event, const uint8_t *data, uint32_t len) {
                     case 'H': // HELLO response
                         if (data[1] == 0) {
                             ESP_LOGI(TAG, "Received HELLO response");
-                            wsConnected = true;
+                            setOnline(true);
                             sendInfo();
                         } else {
                             ESP_LOGE(TAG, "HELLO response error %d", data[1]);
-                            wsConnected = false;
+                            setOnline(false);
                             WSRestart();
                         }                        
                         break;
@@ -275,7 +414,8 @@ static void wsEvent(ws_event_id_t event, const uint8_t *data, uint32_t len) {
                         break;    
                     case 'E': // Common error   
                         ESP_LOGI(TAG, "Common error %d", data[1]);
-                        wsConnected = false;
+                        setOnline(false);
+                        WSRestart();
                         break;
                     case 'A': // Action from cloud
                         // 0   1  2-7   8       9     10    11-12
@@ -305,13 +445,14 @@ static void wsEvent(ws_event_id_t event, const uint8_t *data, uint32_t len) {
 void initWS() {
     if (getConfigValueBool("network/cloud/enabled")) {
         //WSinit(getConfigValueString("network/cloud/address"), &wsEvent, getConfigValueBool("network/cloud/log"));            
-        WSinit("ws://192.168.4.120:8888/ws", &wsEvent, getConfigValueBool("network/cloud/log"));            
+        WSinit("ws://192.168.4.120:8888/ws", &wsHandler, getConfigValueBool("network/cloud/log"));            
     }
 }
 
 void initCore() {   
     // register handler 
     registerIOHandler(&IOhandler);
+    registerBUSHandler(&BusHandler);
     //runWebServer();
     //xTaskCreate(TaskFunction_t pxTaskCode, const char *const pcName, const uint32_t usStackDepth, void *const pvParameters, UBaseType_t uxPriority, TaskHandle_t *const pxCreatedTask)
     xTaskCreate(infoTask, "infoTask", 4096, NULL, 10, NULL);    

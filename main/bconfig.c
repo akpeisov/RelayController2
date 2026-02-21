@@ -373,3 +373,7 @@ void updateBConfig(nodes_cfg_t *cfg) {
         }
     }
 }
+
+bool isOldControllerType() {
+    return controllerType == RCV1S || controllerType == RCV1B;
+}

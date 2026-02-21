@@ -29,3 +29,77 @@ TODO
   I (10790169) HARDWARE: processInput. orig 3, corrected 255
   E (10790169) HARDWARE: No input found in config
 - проверить события с удаленных нод и отправку на фронт  
+- рассылка событий или состояний IO, статуса онлайн
+- если не онлайн LED = yellow
+
+=== Обмен данными когда нода офлайн
+
+- отправка со стороны сервера. Если действие для ноды, которая не онлайн, то найти в ее группе любую ноду онлайн и отправить ей
+
+
+Каждому событию нужен уникальный ID, чтобы сервер умел делать дедупликацию:
+event_id = <node_uid> + <uptime_ms> + <local_counter>
+
+На сервере:
+
+UNIQUE(event_id)
+
+👉 Даже если 2 узла случайно отправят одно событие — сервер примет только одно.
+
+Это страховка уровня backend, must-have.
+
+🟢 Вариант 1 — «Кто первый забрал — того и тапки» (простой и рабочий)
+Алгоритм
+
+Узел А генерирует событие E
+
+Делает broadcast по RS485:
+
+EVENT { id, source_node, payload }
+
+
+Если узел А онлайн →
+он сам отправляет на сервер и рассылает:
+
+EVENT_ACK { event_id }
+
+
+Если А офлайн →
+каждый узел ждёт случайную задержку (jitter):
+
+node1: 80ms
+node2: 120ms
+node3: 300ms
+
+
+Тот, кто первый:
+
+не получил EVENT_ACK
+
+и сам онлайн
+
+→ отправляет событие на сервер
+→ рассылает EVENT_ACK
+
+Остальные, увидев EVENT_ACK — отменяют отправку
+
+
+
+ Input 16 event toggled → 1 actions
+
+assert failed: heap_caps_free heap_caps_base.c:80 (heap != NULL && "free() target pointer is outside heap areas")
+
+
+Backtrace: 0x4008a22d:0x3ffc4080 0x4008a1f5:0x3ffc40a0 0x40092701:0x3ffc40c0 0x400820eb:0x3ffc41e0 0x400927d5:0x3ffc4200 0x4018cfc6:0x3ffc4220 0x4008bdfb:0x3ffc4240 0x4008d192:0x3ffc4260 0x400df240:0x3ffc4280 0x400df2fe:0x3ffc42d0 0x4008af59:0x3ffc4310
+--- 0x4008a22d: panic_abort at /home/erik/esp-idf/components/esp_system/panic.c:477
+--- 0x4008a1f5: esp_system_abort at /home/erik/esp-idf/components/esp_system/port/esp_system_chip.c:87
+--- 0x40092701: __assert_func at /home/erik/esp-idf/components/newlib/src/assert.c:80
+--- 0x400820eb: heap_caps_free at /home/erik/esp-idf/components/heap/heap_caps_base.c:80
+--- 0x400927d5: _free_r at /home/erik/esp-idf/components/newlib/src/heap.c:57
+--- 0x4018cfc6: _reclaim_reent at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/reent/reent.c:84
+--- 0x4008bdfb: prvDeleteTCB at /home/erik/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c:4906
+--- 0x4008d192: vTaskDelete at /home/erik/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c:1461
+--- 0x400df240: processInput at /home/erik/projects/RelayController2/main/hardware.c:941
+--- 0x400df2fe: IOTask at /home/erik/projects/RelayController2/main/hardware.c:995
+--- 0x4008af59: vPortTaskWrapper at /home/erik/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+

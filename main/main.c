@@ -42,17 +42,12 @@ void app_main(void) {
     // init hardware    
     initHardware(); // controllerType is not identified for old devices
     loadBConfig();
-        
-    // get controller model
+    
     rs485_init();
     startIOTask();
     setRGBFace("green");
-    initNetwork(&networkHandler);
-    initCore();
-    // create core tasks
-    // run webserver
-    // run websocket	
-    // init scheduler
+    initNetwork(&networkHandler, isOldControllerType());
+    initCore();    
 }
 
 // Chip is ESP32-D0WD-V3 (revision v3.0)   on new

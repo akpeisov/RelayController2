@@ -12,6 +12,8 @@
 #include "utils.h"
 #include "hardware.h"
 
+//#include "driver/gpio.h"
+
 #define TAG "RS485"
 
 #define UART_PORT UART_NUM_1
@@ -27,9 +29,9 @@
 #define MAXTASKNAME 22
 #define BROADCAST_MAC "\xFF\xFF\xFF\xFF\xFF\xFF"
 
-//static uint8_t self_mac[6];
 static node_uid_t self_node;
 static uint16_t msg_counter = 0;
+static TBusEvent busevent = NULL;
 
 typedef enum {
     MSG_HELLO     = 1,
@@ -42,7 +44,8 @@ typedef enum {
     MSG_CFG_START = 8,
     MSG_CFG_END   = 9,
     MSG_CFG_NACK  = 10,  
-    MSG_PING      = 11
+    MSG_PING      = 11,
+    MSG_STATUS    = 12,
 } msg_type_t;
 
 typedef struct __attribute__((packed)) {
@@ -87,7 +90,7 @@ typedef struct __attribute__((packed)) {
 } cfg_start_t;
 
 typedef struct __attribute__((packed)) {
-    uint16_t seq;     // номер чанка
+    uint16_t seq;     
     uint16_t len;
     uint8_t  data[];
 } cfg_chunk_t;
@@ -118,6 +121,7 @@ static SemaphoreHandle_t pending_mux;
 static uint32_t last_rx_time = 0;  // Время последнего приема
 static bool bus_busy = false;      // Флаг занятости шины
 static SemaphoreHandle_t bus_access_sem = NULL;
+static bool node_online = false;
 
 uint16_t next_msg_id(void) {
     static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
@@ -132,11 +136,14 @@ static bool mac_equal(uint8_t *a, uint8_t *b) {
     return memcmp(a, b, 6) == 0;
 }
 
-static void add_or_update_node(uint8_t *mac, uint8_t model, 
-                               uint16_t outputStates, uint16_t inputStates) {
+static void add_or_update_node(uint8_t *mac, model_t model, 
+                               uint16_t outputStates, uint16_t inputStates, bool online) {
     for (int i = 0; i < node_count; i++) {
         if (mac_equal(nodes[i].mac, mac)) {
             nodes[i].last_seen = esp_timer_get_time();
+            nodes[i].online = online;
+            nodes[i].inputStates = inputStates;
+            nodes[i].outputStates = outputStates;
             return;
         }
     }
@@ -144,9 +151,37 @@ static void add_or_update_node(uint8_t *mac, uint8_t model,
         memcpy(nodes[node_count].mac, mac, 6);
         nodes[node_count].last_seen = esp_timer_get_time();
         nodes[node_count].model = model;
-        node_count++;
-        //ESP_LOGI(TAG, "New node discovered");
+        nodes[node_count].online = online;
+        nodes[node_count].inputStates = inputStates;
+        nodes[node_count].outputStates = outputStates;
+        node_count++;        
         ESP_LOGI(TAG, "New node discovered %02X%02X%02X%02X%02X%02X model %d", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], model);
+
+        bus_event_t evt; 
+        evt.event = BEVT_NEWNODE;       
+        // TODO : states, model?
+        memcpy(evt.target_node, mac, 6);
+        evt.online = online;
+        evt.model = model;
+        evt.inputStates = inputStates;
+        evt.outputStates = outputStates;
+        busevent(evt);
+    }
+}
+
+static void update_node_status(uint8_t *mac, bool online) {
+    for (int i = 0; i < node_count; i++) {
+        if (mac_equal(nodes[i].mac, mac)) {
+            nodes[i].last_seen = esp_timer_get_time();
+            nodes[i].online = online;
+            // send event to core
+            bus_event_t evt; 
+            evt.event = BEVT_NODESTATUS;                   
+            memcpy(evt.target_node, mac, 6);
+            evt.online = online;
+            busevent(evt);
+            return;
+        }
     }
 }
 
@@ -234,9 +269,12 @@ static void rs485_send(uint8_t *dst, msg_type_t type, void *payload, uint16_t le
     
     //ESP_LOG_BUFFER_HEXDUMP(TAG, buf, sizeof(frame_t) + len, CONFIG_LOG_DEFAULT_LEVEL);
     ESP_LOGI(TAG, "TX %s", printFrame(f));
-
     uart_write_bytes(UART_PORT, buf, sizeof(frame_t) + len);
     uart_wait_tx_done(UART_PORT, pdMS_TO_TICKS(20));    
+    
+    // vTaskDelay(pdMS_TO_TICKS(10));
+    // ESP_LOGI("uart_set_rts ", "level=%d", gpio_get_level(UART_RTS_OLD));
+    // gpio_dump_io_configuration(stdout, (1ULL << UART_RTS_OLD));
 }
 
 static bool rs485_send_with_arbitration(uint8_t *dst, msg_type_t type, void *payload, 
@@ -376,34 +414,64 @@ static void handle_frame(frame_t *f) {
     if (!mac_equal(f->dst, self_node.mac) && memcmp(f->dst, BROADCAST_MAC, 6) != 0)
         return;
 
+    uint16_t outputStates = 0;
+    uint16_t inputStates = 0;
+    bool isonline = false;
+    model_t model = UNKNOWN;
+
     switch (f->type) {
         case MSG_HELLO:
-            uint8_t model = f->payload[0];
-            uint16_t outputStates = f->payload[1] | (f->payload[2] << 8);
-            uint16_t inputStates = f->payload[3] | (f->payload[4] << 8);            
-            add_or_update_node(f->src, model, outputStates, inputStates); 
-            rs485_send(f->src, MSG_HELLO_ACK, NULL, 0, next_msg_id());
+            model = f->payload[0];
+            outputStates = f->payload[1] | (f->payload[2] << 8);
+            inputStates = f->payload[3] | (f->payload[4] << 8);         
+            isonline = f->payload[5] != 0;   
+            add_or_update_node(f->src, model, outputStates, inputStates, isonline); 
+            //rs485_send(f->src, MSG_HELLO_ACK, NULL, 0, next_msg_id());
             break;
 
         case MSG_HELLO_ACK:
             ESP_LOGI(TAG, "HELLO_ACK received");
             break;
 
-        case MSG_EVENT:
-            ESP_LOGI(TAG, "EVENT received. Input %d Event %s", f->payload[0], eventStr(f->payload[1]));
-            // execute_event(...)
+        case MSG_STATUS:
+            ESP_LOGI(TAG, "MSG_STATUS received");
+            update_node_status(f->src, isonline); 
+            break;    
+
+        case MSG_EVENT:            
+            // может измениться состояние как входа так и выхода на удаленной ноде, поэтому обновляем их в списке нод и отправляем событие в core.
+            outputStates = f->payload[3] | (f->payload[4] << 8);
+            inputStates = f->payload[5] | (f->payload[6] << 8);         
+            isonline = f->payload[7] != 0;
+            model = f->payload[8];
+            
+            add_or_update_node(f->src, model, outputStates, inputStates, isonline); 
+
+            // publish BEVT_IOEVENT
+            bus_event_t evt;
+            evt.event = BEVT_IOEVENT;
+            evt.io_event.io_type = f->payload[0];
+            evt.io_event.io_id = f->payload[1];
+            evt.io_event.state = f->payload[2];
+            evt.inputStates = inputStates;
+            evt.outputStates = outputStates;
+            evt.online = isonline;
+            memcpy(evt.io_event.node.mac, f->src, 6);
+            busevent(evt);
             break;
 
         case MSG_ACTION:
-            ESP_LOGI(TAG, "ACTION received");
+            // action for this node
             if (f->len == 2) {
-                ESP_LOGI(TAG, "output %d action %d", f->payload[0], f->payload[1]);
-                action_cfg_t act;
-                act.output_id = f->payload[0];
-                act.action = f->payload[1];
-                act.target_node = self_node;
-                // do action
-                setOutput(&act);
+                ESP_LOGI(TAG, "ACTION received to output %d action %d", f->payload[0], f->payload[1]);
+                // TODO : send event to handle
+                bus_event_t evt;
+                evt.event = BEVT_ACTION;
+                evt.io_event.io_id = f->payload[0];
+                evt.io_event.io_type = 0;
+                evt.io_event.action = f->payload[1];                
+                memcpy(evt.target_node, self_node.mac, 6);
+                busevent(evt);                
                 // ack отправляет тот же msgId, но не для бродкастовых пакетов
                 if (memcmp(f->dst, BROADCAST_MAC, 6) != 0)
                     rs485_send(f->src, MSG_ACTION_ACK, NULL, 0, f->msg_id);                
@@ -523,20 +591,47 @@ void sendNodeAction(action_cfg_t *act) {
     addQueue(msg);
 }
 
-void sendNodeEvent(input_event_t event) {
-    //ESP_LOGI(TAG, "Queueing event input %d event %d", event.input_id, event.event);
+void sendNodeEvent(node_io_event_t event, uint16_t inputStates, uint16_t outputStates) {
+    // отправка события изменения IO на все ноды
+    // передавать события изменения IO вместе с их текущим состояием, а далее если нода офлайн то отправить от кого-то кто онлайн
     queued_msg_t *msg = malloc(sizeof(queued_msg_t));
     if (!msg) return;
-    
-    uint8_t payload[2];
-    payload[0] = event.input_id;
-    payload[1] = event.event;
-    
+        
+    uint8_t payload[9];
+    payload[0] = event.io_type;
+    payload[1] = event.io_id;
+    payload[2] = event.state;
+    payload[3] = outputStates & 0xFF;
+    payload[4] = (outputStates >> 8) & 0xFF;
+    payload[5] = inputStates & 0xFF;
+    payload[6] = (inputStates >> 8) & 0xFF;
+    payload[7] = node_online ? 1 : 0;
+    payload[8] = controllerType;
+        
     memcpy(msg->dst, BROADCAST_MAC, 6);
     msg->type = MSG_EVENT;
     msg->msg_id = next_msg_id();
     msg->payload = payload;
-    msg->payload_len = 2;    
+    msg->payload_len = 9;    
+    msg->require_ack = false;
+    msg->waiting_task = NULL;
+    
+    addQueue(msg);
+}
+
+void sendNodeStatus(bool online) {
+    node_online = online;
+    queued_msg_t *msg = malloc(sizeof(queued_msg_t));
+    if (!msg) return;
+    
+    uint8_t payload[1];
+    payload[0] = online ? 1 : 0;
+    
+    memcpy(msg->dst, BROADCAST_MAC, 6);
+    msg->type = MSG_STATUS;
+    msg->msg_id = next_msg_id();
+    msg->payload = payload;
+    msg->payload_len = 1;    
     msg->require_ack = false;
     msg->waiting_task = NULL;
     
@@ -586,22 +681,29 @@ static void discoveryTask(void *arg) {
         msg->type = MSG_HELLO;    
         memcpy(msg->dst, BROADCAST_MAC, 6);        
         //msg->payload = &controllerType;
-        uint8_t *payload = malloc(5);
+        uint8_t *payload = malloc(6);
         if (payload) {
+            uint16_t outputStates = getOutputs();
+            uint16_t inputStates = getInputs();
             payload[0] = controllerType;
-            payload[1] = getOutputs() & 0xFF;
-            payload[2] = (getOutputs() >> 8) & 0xFF;
-            payload[3] = getInputs() & 0xFF;
-            payload[4] = (getInputs() >> 8) & 0xFF;
+            payload[1] = outputStates & 0xFF;
+            payload[2] = (outputStates >> 8) & 0xFF;
+            payload[3] = inputStates & 0xFF;
+            payload[4] = (inputStates >> 8) & 0xFF;
+            payload[5] = node_online;
             msg->payload = payload;
         } // TODO : when it free?
-        msg->payload_len = 1 + 4;    
+        msg->payload_len = 6;
         msg->require_ack = false;
         msg->waiting_task = NULL;
         msg->msg_id = next_msg_id();    
         addQueue(msg);
         vTaskDelay(pdMS_TO_TICKS(1000 * 30));
     }
+}
+
+void registerBUSHandler(TBusEvent event) {
+    busevent = event;
 }
 
 void rs485_init() {    
@@ -616,17 +718,18 @@ void rs485_init() {
     };
 
     uart_param_config(UART_PORT, &cfg);
-    uint8_t rts_pin = UART_RTS_OLD;
-    if (controllerType > 2)
-        rts_pin = UART_RTS;
+    uint8_t rts_pin = UART_RTS;
+    if (isOldControllerType())
+        rts_pin = UART_RTS_OLD;
     ESP_LOGI(TAG, "Initing RS485. Mac is %02X%02X%02X%02X%02X%02X. RTS pin %d", 
              self_node.mac[0], self_node.mac[1], self_node.mac[2], 
              self_node.mac[3], self_node.mac[4], self_node.mac[5], rts_pin);
 
+    
     uart_set_pin(UART_PORT, UART_TX, UART_RX, rts_pin, UART_PIN_NO_CHANGE);
     uart_driver_install(UART_PORT, UART_BUF, UART_BUF, 0, NULL, 0);
     uart_set_mode(UART_PORT, UART_MODE_RS485_HALF_DUPLEX);  
-
+    
     xTaskCreate(uart_rx_task, "uart_rx", 4096, NULL, 10, NULL);    
     pending_mux = xSemaphoreCreateMutex();
 
