@@ -18,6 +18,132 @@ const controller_data_t controllerTypesData[] = {
     {"RCV2B", 12, 16, 12}
 };
 
+// io_cfg_t* makeDefaultConfig() {
+//     if (controllerType == UNKNOWN)
+//         return NULL;
+//     const controller_data_t *ctl = &controllerTypesData[controllerType];
+
+//     uint8_t outputs_cnt = ctl->outputs;
+//     uint8_t btn_cnt     = ctl->buttons;
+//     uint8_t inputs_cnt  = ctl->inputs;
+
+//     uint16_t events_cnt =
+//         btn_cnt +          // BTN: toggle
+//         inputs_cnt * 2;        // SWITCH: on + off
+    
+//     uint16_t actions_cnt =
+//         btn_cnt * 1 +          // toggle
+//         //btn_cnt * 1 +          // longpress (WAIT)
+//         inputs_cnt * 2;        // on + off
+//     actions_cnt++; //for test    
+
+//     io_cfg_t *cfg = calloc(1, sizeof(io_cfg_t));
+//     if (!cfg) return NULL;
+//     cfg->version = 1;
+
+//     cfg->outputs = calloc(outputs_cnt, sizeof(output_cfg_t));
+//     cfg->inputs  = calloc(btn_cnt + inputs_cnt, sizeof(input_cfg_t));
+//     cfg->events  = calloc(events_cnt, sizeof(input_event_cfg_t));
+//     cfg->actions = calloc(actions_cnt, sizeof(action_cfg_t));
+
+//     cfg->outputs_count = outputs_cnt;
+//     cfg->inputs_count  = btn_cnt + inputs_cnt;
+//     cfg->events_count  = events_cnt;
+//     cfg->actions_count = actions_cnt;
+
+//     uint16_t ev_idx = 0;
+//     uint16_t act_idx = 0;
+//     uint8_t input_idx = 0;
+
+//     // OUTPUTS
+//     for (uint8_t i = 0; i < outputs_cnt; i++) {
+//         cfg->outputs[i] = (output_cfg_t) {
+//             .id = i,
+//             .type = OUTPUT_SIMPLE,
+//             .is_on = false,
+//             .simple.limit_sec = 0
+//         };
+//     }
+
+//     // SERVICE BUTTONS
+//     for (uint8_t i = 0; i < btn_cnt; i++, input_idx++) {
+//         input_cfg_t *in = &cfg->inputs[input_idx];
+//         in->id = i + 16;
+//         in->type = INPUT_BTN;
+//         in->events_count = 1;
+//         in->events_offset = ev_idx;
+
+//         if (i!=3) {
+//             // EVT_TOGGLE
+//             cfg->events[ev_idx++] = (input_event_cfg_t){
+//                 .event = EVT_TOGGLE,
+//                 .actions_count = 1,
+//                 .actions_offset = act_idx
+//             };
+//             cfg->actions[act_idx++] = (action_cfg_t){
+//                 .target_node = self_node,
+//                 .output_id = i,
+//                 .action = ACT_TOGGLE
+//             };  
+//         } else {
+//             // test action 
+//             cfg->events[ev_idx++] = (input_event_cfg_t){
+//                 .event = EVT_TOGGLE,
+//                 .actions_count = 2,
+//                 .actions_offset = act_idx
+//             };
+//             cfg->actions[act_idx++] = (action_cfg_t){
+//                 .target_node = self_node,
+//                 .output_id = 3,
+//                 .action = ACT_TOGGLE
+//             };  
+//             cfg->actions[act_idx++] = (action_cfg_t){
+//                 .target_node = ((node_uid_t){ .mac = {0xc8, 0xc9, 0xa3, 0xf9, 0xb6, 0xc8} }),
+//                 .output_id = 0,
+//                 .action = ACT_TOGGLE
+//             };  
+//         }       
+        
+//     }
+
+//     // EXTERNAL INPUTS
+//     for (uint8_t i = 0; i < inputs_cnt; i++, input_idx++) {
+//         uint8_t out = i < outputs_cnt ? i : outputs_cnt - 1;
+
+//         input_cfg_t *in = &cfg->inputs[input_idx];
+//         in->id = i;
+//         in->type = INPUT_SWITCH;
+//         in->events_count = 2;
+//         in->events_offset = ev_idx;
+
+//         // EVT_ON
+//         cfg->events[ev_idx++] = (input_event_cfg_t){
+//             .event = EVT_ON,
+//             .actions_count = 1,
+//             .actions_offset = act_idx
+//         };
+//         cfg->actions[act_idx++] = (action_cfg_t){
+//             .target_node = self_node,
+//             .output_id = out,
+//             .action = ACT_ON
+//         };
+
+//         // EVT_OFF
+//         cfg->events[ev_idx++] = (input_event_cfg_t){
+//             .event = EVT_OFF,
+//             .actions_count = 1,
+//             .actions_offset = act_idx
+//         };
+//         cfg->actions[act_idx++] = (action_cfg_t){
+//             .target_node = self_node,
+//             .output_id = out,
+//             .action = ACT_OFF
+//         };
+//     }
+
+//     return cfg;
+// }
+
 io_cfg_t* makeDefaultConfig() {
     if (controllerType == UNKNOWN)
         return NULL;
@@ -33,9 +159,7 @@ io_cfg_t* makeDefaultConfig() {
     
     uint16_t actions_cnt =
         btn_cnt * 1 +          // toggle
-        //btn_cnt * 1 +          // longpress (WAIT)
         inputs_cnt * 2;        // on + off
-    actions_cnt++; //for test    
 
     io_cfg_t *cfg = calloc(1, sizeof(io_cfg_t));
     if (!cfg) return NULL;
@@ -73,37 +197,17 @@ io_cfg_t* makeDefaultConfig() {
         in->events_count = 1;
         in->events_offset = ev_idx;
 
-        if (i!=3) {
-            // EVT_TOGGLE
-            cfg->events[ev_idx++] = (input_event_cfg_t){
-                .event = EVT_TOGGLE,
-                .actions_count = 1,
-                .actions_offset = act_idx
-            };
-            cfg->actions[act_idx++] = (action_cfg_t){
-                .target_node = self_node,
-                .output_id = i,
-                .action = ACT_TOGGLE
-            };  
-        } else {
-            // test action 
-            cfg->events[ev_idx++] = (input_event_cfg_t){
-                .event = EVT_TOGGLE,
-                .actions_count = 2,
-                .actions_offset = act_idx
-            };
-            cfg->actions[act_idx++] = (action_cfg_t){
-                .target_node = self_node,
-                .output_id = 3,
-                .action = ACT_TOGGLE
-            };  
-            cfg->actions[act_idx++] = (action_cfg_t){
-                .target_node = ((node_uid_t){ .mac = {0xc8, 0xc9, 0xa3, 0xf9, 0xb6, 0xc8} }),
-                .output_id = 0,
-                .action = ACT_TOGGLE
-            };  
-        }       
-        
+        // EVT_TOGGLE
+        cfg->events[ev_idx++] = (input_event_cfg_t){
+            .event = EVT_TOGGLE,
+            .actions_count = 1,
+            .actions_offset = act_idx
+        };
+        cfg->actions[act_idx++] = (action_cfg_t){
+            .target_node = self_node,
+            .output_id = i,
+            .action = ACT_TOGGLE
+        };          
     }
 
     // EXTERNAL INPUTS
@@ -239,7 +343,7 @@ size_t getConfigSize(io_cfg_t* cfg) {
                      + cfg->actions_count * sizeof(action_cfg_t);
 }
 
-void loadBConfig() {
+void loadBConfig1() {
     getMac(self_node.mac);
     
     // TODO : load config
@@ -247,21 +351,12 @@ void loadBConfig() {
     dumpIoConfig(gCfg);     
 }
 
-void testConfig() {
+void loadBConfig() {    
     const char* fileName = "io_config.bin";
-    
-    // temp
-    gCfg = makeDefaultConfig();        
-    if (saveFile(fileName, (const uint8_t*)gCfg, getConfigSize(gCfg)) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to save config");     
-    }
-    // temp
-
     ESP_LOGI(TAG, "Loading config back from file '%s'...", fileName);
     uint8_t *loadedBuf = NULL;
     size_t loadedSize = 0;    
     if (loadFile(fileName, &loadedBuf, &loadedSize) == ESP_OK) {
-        // --- Восстанавливаем структуру из бинарного буфера ---
         gCfg = (io_cfg_t*)loadedBuf;        
     } else {
         ESP_LOGE(TAG, "Failed to load config. Making default config");
@@ -274,7 +369,12 @@ void testConfig() {
     
     dumpIoConfig(gCfg);
 
-    return;
+    // return;
+    // gCfg = makeDefaultConfig();        
+    // if (saveFile(fileName, (const uint8_t*)gCfg, getConfigSize(gCfg)) != ESP_OK) {
+    //     ESP_LOGE(TAG, "Failed to save config");     
+    // }
+    // temp
 }
 
 input_cfg_t *findInput(uint8_t input_id) {
@@ -365,7 +465,7 @@ void updateBConfig(nodes_cfg_t *cfg) {
         ESP_LOGI(TAG, "Node %d: UID %s, inputs %d, outputs %d",
             i, strNode(&nodeCfg->uid), nodeCfg->io_cfg.inputs_count, nodeCfg->io_cfg.outputs_count);
         if (node_uid_equal(&nodeCfg->uid, &self_node)) {    
-            ESP_LOGI(TAG, "This config is for local node. Updating IO config...");
+            ESP_LOGI(TAG, "This config for local node. Updating IO config...");
             updateLocalConfig(&nodeCfg->io_cfg);            
         } else {
             // send to remote node

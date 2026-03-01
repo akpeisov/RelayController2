@@ -27,6 +27,7 @@
 #define I2CPORT  0
 #define MAXFREQ  1526
 #define MAXPWM   4096
+#define MINPWMLed 1500
 #define MAXRELAYS 16
 #define MAXLEDS  16
 
@@ -136,6 +137,16 @@ void readFrom165(uint8_t *values, uint8_t count)
 void setGPIOOut(uint8_t gpio) {
     gpio_reset_pin(gpio);
     gpio_set_direction(gpio, GPIO_MODE_OUTPUT);
+
+    // gpio_config_t cfg = {
+    //     .pin_bit_mask = 1ULL << IO_EN,
+    //     .mode = GPIO_MODE_INPUT_OUTPUT,//GPIO_MODE_OUTPUT,
+    //     .pull_up_en = GPIO_PULLUP_DISABLE,
+    //     .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    //     .intr_type = GPIO_INTR_DISABLE
+    // };
+    // gpio_config(&cfg);   
+    //gpio_dump_io_configuration(stdout, (1ULL << IO_EN)); 
 }
 
 void setGPIOIn(uint8_t gpio) {
@@ -503,7 +514,7 @@ esp_err_t initI2Cdevices(model_t *ctrlType) {
     ESP_LOGI("GPIO0 before", "level=%d", gpio_get_level(IO_EN));
     gpio_set_level(IO_EN, 0);
     ESP_LOGI("GPIO0 after", "level=%d", gpio_get_level(IO_EN));
-    gpio_dump_io_configuration(stdout, (1ULL << IO_EN));
+gpio_dump_io_configuration(stdout, (1ULL << IO_EN));
     
     xTaskCreate(&relayTask, "relayTask", 4096, NULL, 5, NULL);
     return ESP_OK;
@@ -540,6 +551,39 @@ uint8_t readFrom8574(uint8_t adr) {
     return inputs;
 }
 
+void setRGBFaceValue(uint16_t r, uint16_t g, uint16_t b) {
+    if (!i2c) return;
+    uint8_t dev = 0;
+    uint8_t rNum = 0, gNum = 0, bNum = 0;  
+    if (controllerType == RCV2S) {
+        dev = 4;
+        rNum = 10;
+        gNum = 11;
+        bNum = 12;
+    } else if (controllerType == RCV2B) {
+        dev = 7;
+        rNum = 13;
+        gNum = 14;
+        bNum = 15;    
+    }
+    if (!dev) return;
+    setI2COut(dev, rNum, b);
+    setI2COut(dev, gNum, g);
+    setI2COut(dev, bNum, r);
+}
+
+void setRGBFace(char *color) {    
+    if (!strcmp(color, "red")) {            
+        setRGBFaceValue(3000, MAXPWM, MAXPWM);        
+    } else if (!strcmp(color, "yellow")) {            
+        setRGBFaceValue(2000, 3400, MAXPWM);                
+    } else if (!strcmp(color, "green")) {            
+        setRGBFaceValue(MAXPWM, 3000, MAXPWM);                        
+    } else {
+        setRGBFaceValue(2000, 2000, 2000);                                
+    }    
+}
+/*
 void setRGBFace(char* color) {
     if (!i2c) return;
     uint16_t min = 1500;  
@@ -573,9 +617,8 @@ void setRGBFace(char* color) {
         setI2COut(dev, r, MAXPWM);        
         setI2COut(dev, g, MAXPWM);        
         setI2COut(dev, b, MAXPWM);
-    }
-    
-}
+    }    
+}*/
 
 esp_err_t setClock() {
     if (!clockPresent) return ESP_ERR_NOT_FOUND;
@@ -737,6 +780,7 @@ char* getControllerTypeText(uint8_t type) {
 
 uint16_t getOutputs() {
     uint16_t outputs = 0;
+    if (!gCfg) return 0;
     for (uint8_t i = 0; i < gCfg->outputs_count; i++) {
         const output_cfg_t *o = &gCfg->outputs[i];
         if (o->is_on) 
@@ -749,6 +793,7 @@ uint16_t getOutputs() {
 
 uint16_t getInputs() {
     uint16_t inputs= 0;
+    if (!gCfg) return 0;
     for (uint8_t i = 0; i < gCfg->inputs_count; i++) {
         const input_cfg_t *in = &gCfg->inputs[i];
         if (in->is_on) 
@@ -792,7 +837,7 @@ void setOutput(action_cfg_t *act) {
         e.state = output->is_on;
         e.timer = output->timer;        
         e.node = act->target_node;
-        ioevent(e);
+        if (ioevent) ioevent(e);
 
         // sending current state to bus
         node_io_event_t ioEvnt;
@@ -819,14 +864,16 @@ void actionsTask(void *pvParameter) {
             durationCnt--;            
             vTaskDelay(1000 / portTICK_PERIOD_MS);
         } else {
-            action_cfg_t *act = &gCfg->actions[evt->actions_offset + i];
+            action_cfg_t *act = &gCfg->actions[evt->actions_offset + i];            
             //ESP_LOGI(TAG, "process action %d output %d", act->action, act->output_id);            
             // TODO : print node
             //ESP_LOGI(TAG, "process action %d on output %d node %s", act->action, act->output_id, strNode(&act->target_node));
-            if (act->action == ACT_WAIT) {
-                durationCnt = act->duration_sec;
-            } else {
-                setOutput(act);                
+            if (act != NULL) {
+                if (act->action == ACT_WAIT) {
+                    durationCnt = act->duration_sec;
+                } else {
+                    setOutput(act);                
+                }
             }
         }            
         i++;
@@ -921,7 +968,7 @@ void processInput(uint8_t input_id, uint8_t event_id) {
             e.io_id = inputId;
             e.state = event_id;            
             memcpy(e.node.mac, self_node, 6);
-            ioevent(e);
+            if (ioevent) ioevent(e);
         }
         
         const io_cfg_t *cfg = gCfg;    
@@ -1012,7 +1059,7 @@ void IOTask() {
             //outputsTimerShot();
             if (++cnt_timer >= 10) {
                 cnt_timer = 0;
-                //outputTimer();
+                outputTimer();
 
                 // if (++sch_timer >= 60) {
                 //     sch_timer = 0;
@@ -1036,24 +1083,16 @@ void IOTask() {
 }
 
 void initHardware() {
+    ESP_LOGI(TAG, "Init hardware");
     getMac(self_node);
-    //setGPIOOut(IO_EN);
-    gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << IO_EN,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    gpio_config(&cfg);    
-
+    setGPIOOut(IO_EN);
     setGPIOOut(IO_REN);
     gpio_set_level(IO_EN, 1);    
     gpio_set_level(IO_REN, 1);     
     hw_evt = xEventGroupCreate();
     if (initI2Cdevices(&controllerType) == ESP_OK) {
         i2c = true;
-        ESP_LOGI(TAG, "I2C inited. %s", getControllerTypeText(controllerType));
+        ESP_LOGI(TAG, "I2C inited.");
     } else {
         ESP_LOGI(TAG, "I2C not inited. Probably old controller 1.0");
         setGPIOOut(IO_CLK);
@@ -1065,6 +1104,7 @@ void initHardware() {
         controllerType = UNKNOWN;
         determinateControllerType();
     }    
+    ESP_LOGI(TAG, "Controller type is %s", getControllerTypeText(controllerType));
     
     xTaskCreate(&hwTask, "hwTask", 4096, NULL, 5, NULL);    
 }

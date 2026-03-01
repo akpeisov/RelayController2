@@ -22,7 +22,7 @@ void networkHandler(uint8_t event, uint32_t address) {
     if (event == WIFI_AP_START) {
 		ESP_LOGI(TAG, "Starting webserver for AP");
 		initWebServer(0);
-    } else if (!inited && (event == WIFI_CONNECTED || event == ETH_CONNECTED)) {
+    } else if (!inited && (event == WIFI_CONNECTED || event == ETH_CONNECTED) && address) {
 		inited = true;
 		//otaCheck(getSettingsValueString("otaurl"), cert_pem_start);
 		runWebServer();
@@ -45,7 +45,7 @@ void app_main(void) {
     
     rs485_init();
     startIOTask();
-    setRGBFace("green");
+    setRGBFace("yellow");
     initNetwork(&networkHandler, isOldControllerType());
     initCore();    
 }

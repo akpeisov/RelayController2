@@ -163,7 +163,6 @@ typedef struct __attribute__((packed)) {
 
 extern io_cfg_t *gCfg;
 
-void testConfig();
 void loadBConfig();
 
 input_cfg_t *findInput(uint8_t input_id);

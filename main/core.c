@@ -229,6 +229,22 @@ static void infoTask(void *arg) {
     }
 }
 
+esp_err_t setLed(char **response, char *content) {
+    cJSON *parent = cJSON_Parse(content);
+    if (!cJSON_IsObject(parent)) {
+        setErrorTextJson(response, "Is not a JSON object");
+        cJSON_Delete(parent);
+        return ESP_FAIL;
+    }
+    uint16_t r = cJSON_GetObjectItem(parent, "r")->valueint;
+    uint16_t g = cJSON_GetObjectItem(parent, "g")->valueint;
+    uint16_t b = cJSON_GetObjectItem(parent, "b")->valueint;    
+    setRGBFaceValue(r, g, b);
+    setTextJson(response, "OK");    
+    cJSON_Delete(parent);
+    return ESP_OK;
+}
+
 esp_err_t uiRouter(httpd_req_t *req) {    
     //ESP_LOGI(TAG, "%d %s", req->method, req->uri);
     char *uri = getClearURI(req->uri);
@@ -244,6 +260,16 @@ esp_err_t uiRouter(httpd_req_t *req) {
             if (err == ESP_OK) {
                 if (xSemaphoreTake(gMutex, portMAX_DELAY) == pdTRUE) {
                     err = setConfig(&response, content); 
+                    xSemaphoreGive(gMutex);
+                }
+            }
+        }            
+    } else if (!strcmp(uri, "/service/testled")) {
+        if (req->method == HTTP_POST) {
+            err = getContent(&content, req);
+            if (err == ESP_OK) {
+                if (xSemaphoreTake(gMutex, portMAX_DELAY) == pdTRUE) {
+                    err = setLed(&response, content); 
                     xSemaphoreGive(gMutex);
                 }
             }
@@ -300,7 +326,7 @@ static void setOnline(bool online) {
 
 void sendEvent(uint8_t* mac, uint8_t io_type, uint8_t io_id, bool state, uint16_t timer, uint16_t outputStates, uint16_t inputStates) {
     // AA 0E NODE TT ID SS TMR ISlow IShi OSlow OShi
-    // TT type SS state TMR of output    
+    // TT type SS state TMR of output        
     uint8_t buflen = 16;
     uint8_t buffer[buflen];    
     buffer[0] = 'E'; // event
@@ -319,33 +345,19 @@ void sendEvent(uint8_t* mac, uint8_t io_type, uint8_t io_id, bool state, uint16_
     } else {
         buflen = 14;
     }
+
+    ESP_LOG_BUFFER_HEXDUMP(TAG, buffer, buflen, CONFIG_LOG_DEFAULT_LEVEL);
+
     WSSendPacket(buffer, buflen);
 }
 
 void IOhandler(io_event_t event) {
+    // сюда прилетают сообщения об изменении соостояния IO от HW. Нужно отправить на сервере и по 485
+    // и надо еще от шины. и тут решить отправлять за других или нет
     ESP_LOGI(TAG, "IOhandler typeIO %d io %d state %s, node %s", 
              event.io_type, event.io_id, event.state ? "on" : "off", strNode(&event.node));
     // input or output event happened. Publish it to cloud and local network
-    sendEvent(event.node.mac, event.io_type, event.io_id, event.state, event.timer, getOutputs(), getInputs());
-    // AA 0E NODE TT ID SS TMR
-    // uint8_t buflen = 12;
-    // uint8_t buffer[buflen];    
-    // buffer[0] = 'E'; // event
-    // memcpy(buffer+1, &event.node.mac, 6);
-    // buffer[7] = event.io_type;
-    // buffer[8] = event.io_id;
-    // //buffer[9] = event.event;        
-    // buffer[9] = event.state;
-    // if (event.io_type == 0) { 
-    //     buffer[10] = event.timer >> 8;
-    //     buffer[11] = event.timer & 0xFF;
-    // } else {
-    //     buflen = 10;
-    // }
-    // WSSendPacket(buffer, buflen);
-
-    // сюда прилетают сообщения об изменении соостояния IO от HW. Нужно отправить на сервере и по 485
-    // и надо еще от шины. и тут решить отправлять за других или нет
+    sendEvent(event.node.mac, event.io_type, event.io_id, event.state, event.timer, getOutputs(), getInputs());    
 }
 
 void BusHandler(bus_event_t event) {
@@ -366,10 +378,11 @@ void BusHandler(bus_event_t event) {
             act.action = event.io_event.action;
             act.target_node = event.io_event.node;
             setOutput(&act);
+            break;
         case BEVT_IOEVENT:
             if (!event.online) {
                 // only for offline
-                sendEvent(event.target_node, event.io_event.io_type, event.io_event.io_id,
+                sendEvent(event.io_event.node.mac, event.io_event.io_type, event.io_event.io_id,
                     event.io_event.state, event.io_event.timer, event.outputStates, event.inputStates);                
             }
             break;
@@ -385,9 +398,11 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
         case WS_EVENT_CONNECTED:
             ESP_LOGI(TAG, "WebSocket connected");
             // waiting for hello message from server with timestamp, then we will set time and send HELLO with JWT token
+            setRGBFace("green");
             break;
         case WS_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "WebSocket disconnected");
+            setRGBFace("yellow");
             setOnline(false);
             break;
         case WS_EVENT_DATA:
