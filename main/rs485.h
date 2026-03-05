@@ -24,6 +24,7 @@ typedef struct __attribute__((packed)) {
     io_event_t io_event;
     uint16_t inputStates;
     uint16_t outputStates;
+    io_action_t io_action;
 } bus_event_t;
 typedef void (*TBusEvent) (bus_event_t data);
 void registerBUSHandler(TBusEvent event);

@@ -839,7 +839,7 @@ void setOutput(action_cfg_t *act) {
         
         // publish to core
         io_event_t e;
-        e.io_type = 0;
+        e.io_type = IO_OUT;
         e.io_id = act->output_id;
         e.state = output->is_on;
         e.timer = output->timer;        
@@ -848,7 +848,7 @@ void setOutput(action_cfg_t *act) {
 
         // sending current state to bus
         node_io_event_t ioEvnt;
-        ioEvnt.io_type = 0;
+        ioEvnt.io_type = IO_OUT;
         ioEvnt.io_id = output->id;
         ioEvnt.state = output->is_on;       
         sendNodeEvent(ioEvnt, getInputs(), getOutputs());

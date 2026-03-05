@@ -70,12 +70,6 @@ typedef struct __attribute__((packed)) {
 } input_event_t;
 
 typedef struct __attribute__((packed)) {
-    uint8_t io_id;
-    uint8_t io_type; // input or output   
-    uint8_t state;
-} node_io_event_t;
-
-typedef struct __attribute__((packed)) {
     event_type_t event;
     uint8_t actions_count;
     uint16_t actions_offset;
@@ -143,16 +137,34 @@ typedef struct {
 } controller_data_t;
 
 extern const controller_data_t controllerTypesData[];
+   
+typedef enum __attribute__((packed)) {
+    IO_OUT = 0,
+    IO_IN
+} io_type_t;
+
+typedef struct __attribute__((packed)) {
+    node_uid_t node;
+    io_type_t io_type;    
+    uint8_t io_id;    
+    bool state;    
+    uint16_t outputsStates;
+    uint16_t inputStates;
+    //action_type_t action;    
+    uint16_t timer; // for timed output
+} io_event_t;
+
+typedef struct __attribute__((packed)) {
+    node_uid_t node;
+    uint8_t io_id;    
+    action_type_t action;    
+} io_action_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t io_id;
-    uint8_t io_type; //input or output
-    //event_type_t event;
-    bool state;
-    node_uid_t node;
-    uint16_t timer; // for timed output
-    action_type_t action;
-} io_event_t;
+    io_type_t io_type; // input or output   
+    uint8_t state;
+} node_io_event_t;
 
 //extern io_cfg_t *gCfg;
 // config accessors

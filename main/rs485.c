@@ -543,10 +543,13 @@ static void handle_frame(frame_t *f) {
                 // TODO : send event to handle
                 static bus_event_t evt;
                 evt.event = BEVT_ACTION;
-                evt.io_event.io_id = f->payload[0];
-                evt.io_event.io_type = 0;
-                evt.io_event.action = f->payload[1];                
-                memcpy(evt.io_event.node.mac, self_node.mac, 6);
+                evt.io_action.io_id = f->payload[0];
+                evt.io_action.action = f->payload[1];
+                memcpy(evt.io_action.node.mac, self_node.mac, 6);
+                // evt.io_event.io_id = f->payload[0];
+                // evt.io_event.io_type = 0;
+                // evt.io_event.action = f->payload[1];                
+                //memcpy(evt.io_event.node.mac, self_node.mac, 6);
                 if (busevent) busevent(evt);                
                 // ack отправляет тот же msgId, но не для бродкастовых пакетов
                 if (memcmp(f->dst, BROADCAST_MAC, 6) != 0)

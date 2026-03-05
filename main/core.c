@@ -325,32 +325,53 @@ static void setOnline(bool online) {
     sendNodeStatus(online);
 }
 
-void sendEvent(uint8_t* mac, uint8_t io_type, uint8_t io_id, bool state, uint16_t timer, uint16_t outputStates, uint16_t inputStates) {
+typedef struct __attribute__((packed)) {
+    uint8_t msg_type;
+    uint8_t payload[];
+} ws_event_t;
+
+void sendEvent(io_event_t event) {
     // AA 0E NODE TT ID SS TMR ISlow IShi OSlow OShi
-    // TT type SS state TMR of output        
-    uint8_t buflen = 16;
-    uint8_t buffer[buflen];    
-    buffer[0] = 'E'; // event
-    memcpy(buffer+1, mac, 6);
-    buffer[7] = io_type;
-    buffer[8] = io_id;    
-    buffer[9] = state;
-    buffer[10] = outputStates & 0xFF; 
-    buffer[11] = (outputStates >> 8) & 0xFF; 
-    buffer[12] = inputStates & 0xFF;
-    buffer[13] = (inputStates >> 8) & 0xFF; 
-    // TODO: io states, timer optional if io_type is output
-    if (io_type == 0) { 
-        buffer[14] = timer >> 8;
-        buffer[15] = timer & 0xFF;
+    // TT type SS state TMR of output
+    uint16_t total_len = sizeof(ws_event_t) + sizeof(io_event_t);
+    ws_event_t *packet = malloc(total_len);
+    if (packet) {
+        packet->msg_type = 'E';
+        memcpy(packet->payload, &event, sizeof(io_event_t));
+        ESP_LOG_BUFFER_HEXDUMP(TAG, (uint8_t*)packet, total_len, CONFIG_LOG_DEFAULT_LEVEL);
+        WSSendPacket((uint8_t*)packet, total_len);        
+        free(packet);
     } else {
-        buflen = 14;
+        ESP_LOGE(TAG, "Can't allocate memory for packet");
     }
-
-    ESP_LOG_BUFFER_HEXDUMP(TAG, buffer, buflen, CONFIG_LOG_DEFAULT_LEVEL);
-
-    WSSendPacket(buffer, buflen);
 }
+
+// void sendEvent(uint8_t* mac, uint8_t io_type, uint8_t io_id, bool state, uint16_t timer, uint16_t outputStates, uint16_t inputStates) {
+//     // AA 0E NODE TT ID SS TMR ISlow IShi OSlow OShi
+//     // TT type SS state TMR of output        
+//     uint8_t buflen = 16;
+//     uint8_t buffer[buflen];    
+//     buffer[0] = 'E'; // event
+//     memcpy(buffer+1, mac, 6);
+//     buffer[7] = io_type;
+//     buffer[8] = io_id;    
+//     buffer[9] = state;
+//     buffer[10] = outputStates & 0xFF; 
+//     buffer[11] = (outputStates >> 8) & 0xFF; 
+//     buffer[12] = inputStates & 0xFF;
+//     buffer[13] = (inputStates >> 8) & 0xFF; 
+//     // TODO: io states, timer optional if io_type is output
+//     if (io_type == 0) { 
+//         buffer[14] = timer >> 8;
+//         buffer[15] = timer & 0xFF;
+//     } else {
+//         buflen = 14;
+//     }
+
+//     ESP_LOG_BUFFER_HEXDUMP(TAG, buffer, buflen, CONFIG_LOG_DEFAULT_LEVEL);
+
+//     WSSendPacket(buffer, buflen);
+// }
 
 void serviceTask(void *pvParameter) {
     ESP_LOGI(TAG, "Creating service task");
@@ -372,7 +393,8 @@ void IOhandler(io_event_t event) {
     ESP_LOGI(TAG, "IOhandler typeIO %d io %d state %s, node %s", 
              event.io_type, event.io_id, event.state ? "on" : "off", strNode(&event.node));
     // input or output event happened. Publish it to cloud and local network
-    sendEvent(event.node.mac, event.io_type, event.io_id, event.state, event.timer, getOutputs(), getInputs());    
+    //sendEvent(event.node.mac, event.io_type, event.io_id, event.state, event.timer, getOutputs(), getInputs());    
+    sendEvent(event);    
 }
 
 void BusHandler(bus_event_t event) {
@@ -389,16 +411,20 @@ void BusHandler(bus_event_t event) {
             break;
         case BEVT_ACTION:            
             action_cfg_t act;
-            act.output_id = event.io_event.io_id;
-            act.action = event.io_event.action;
+            // act.output_id = event.io_event.io_id;
+            // act.action = event.io_event.action;
+            // act.target_node = event.io_event.node;
+            act.action = event.io_action.action;
+            act.output_id = event.io_action.io_id;
             act.target_node = event.io_event.node;
             setOutput(&act);
             break;
         case BEVT_IOEVENT:
             if (!event.online) {
                 // only for offline
-                sendEvent(event.io_event.node.mac, event.io_event.io_type, event.io_event.io_id,
-                    event.io_event.state, event.io_event.timer, event.outputStates, event.inputStates);                
+                sendEvent(event.io_event);
+                // sendEvent(event.io_event.node.mac, event.io_event.io_type, event.io_event.io_id,
+                //     event.io_event.state, event.io_event.timer, event.outputStates, event.inputStates);                
             }
             break;
         default:
