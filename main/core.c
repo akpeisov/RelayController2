@@ -26,6 +26,7 @@
 
 static const char *TAG = "CORE";
 static bool wsConnected = false;
+static bool reboot = false;
 
 extern const char jwt_start[] asm("_binary_jwt_pem_start");
 extern const char jwt_end[] asm("_binary_jwt_pem_end");
@@ -351,6 +352,20 @@ void sendEvent(uint8_t* mac, uint8_t io_type, uint8_t io_id, bool state, uint16_
     WSSendPacket(buffer, buflen);
 }
 
+void serviceTask(void *pvParameter) {
+    ESP_LOGI(TAG, "Creating service task");
+    while(1) {   
+        if (reboot) {
+            static uint8_t cntReboot = 0;
+            if (cntReboot++ >= 3) {
+                ESP_LOGI(TAG, "Reboot now!");
+                esp_restart();
+            }
+        }        
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+
 void IOhandler(io_event_t event) {
     // сюда прилетают сообщения об изменении соостояния IO от HW. Нужно отправить на сервере и по 485
     // и надо еще от шины. и тут решить отправлять за других или нет
@@ -424,8 +439,9 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
                         }                        
                         break;
                     case 'C': // config
-                        nodes_cfg_t *cfg = (nodes_cfg_t*)data;                        
-                        updateBConfig(cfg);                        
+                        //nodes_cfg_t *cfg = (nodes_cfg_t*)data+1;
+                        //ESP_LOG_BUFFER_HEXDUMP("new cfg", data+1, len-1, CONFIG_LOG_DEFAULT_LEVEL);
+                        updateBConfig(data+1);                                                
                         break;    
                     case 'E': // Common error   
                         ESP_LOGI(TAG, "Common error %d", data[1]);
@@ -447,6 +463,25 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
                             ESP_LOGW(TAG, "Input action from cloud not supported");
                         }
                         break;
+                    case 0xC0: // command
+                        switch (data[1]) {
+                            case 'R':
+                                ESP_LOGI(TAG, "Reboot command");
+                                reboot = true;
+                                break;
+                            case 'O':
+                                ESP_LOGI(TAG, "OTA command");
+                                startOTA(getConfigValueString("network/otaURL") );
+                                break;
+                            case 'I':
+                                ESP_LOGI(TAG, "Info command");
+                                sendInfo();
+                                break;    
+                            default:
+                                ESP_LOGE(TAG, "Unknown command");
+                                break;
+                        }
+                        break;    
                     default:
                         break;
                 }
@@ -470,5 +505,6 @@ void initCore() {
     registerBUSHandler(&BusHandler);
     //runWebServer();
     //xTaskCreate(TaskFunction_t pxTaskCode, const char *const pcName, const uint32_t usStackDepth, void *const pvParameters, UBaseType_t uxPriority, TaskHandle_t *const pxCreatedTask)
+    xTaskCreate(&serviceTask, "serviceTask", 4096, NULL, 5, NULL);    
     xTaskCreate(infoTask, "infoTask", 4096, NULL, 10, NULL);    
 }

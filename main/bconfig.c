@@ -8,6 +8,7 @@
 static const char *TAG = "BCONFIG";
 io_cfg_t *gCfg;
 node_uid_t self_node;
+SemaphoreHandle_t cfgMutex;
 
 const controller_data_t controllerTypesData[] = {
     {"UNKNOWN", 0, 0, 0},    
@@ -17,6 +18,8 @@ const controller_data_t controllerTypesData[] = {
     {"RCV2M", 6, 8, 6},
     {"RCV2B", 12, 16, 12}
 };
+
+const char* fileName = "io_config.bin";
 
 // io_cfg_t* makeDefaultConfig() {
 //     if (controllerType == UNKNOWN)
@@ -144,44 +147,59 @@ const controller_data_t controllerTypesData[] = {
 //     return cfg;
 // }
 
-io_cfg_t* makeDefaultConfig() {
+
+
+
+io_cfg_t* makeDefaultConfig(void) {
     if (controllerType == UNKNOWN)
         return NULL;
+
     const controller_data_t *ctl = &controllerTypesData[controllerType];
 
-    uint8_t outputs_cnt = ctl->outputs;
-    uint8_t btn_cnt     = ctl->buttons;
-    uint8_t inputs_cnt  = ctl->inputs;
+    uint8_t  outputs_cnt = ctl->outputs;
+    uint8_t  btn_cnt     = ctl->buttons;
+    uint8_t  inputs_cnt  = ctl->inputs;
+
+    uint16_t total_inputs = btn_cnt + inputs_cnt;
 
     uint16_t events_cnt =
-        btn_cnt +          // BTN: toggle
+        btn_cnt +              // BTN: toggle
         inputs_cnt * 2;        // SWITCH: on + off
-    
+
     uint16_t actions_cnt =
         btn_cnt * 1 +          // toggle
         inputs_cnt * 2;        // on + off
 
-    io_cfg_t *cfg = calloc(1, sizeof(io_cfg_t));
-    if (!cfg) return NULL;
-    cfg->version = 1;
 
-    cfg->outputs = calloc(outputs_cnt, sizeof(output_cfg_t));
-    cfg->inputs  = calloc(btn_cnt + inputs_cnt, sizeof(input_cfg_t));
-    cfg->events  = calloc(events_cnt, sizeof(input_event_cfg_t));
-    cfg->actions = calloc(actions_cnt, sizeof(action_cfg_t));
+    size_t total_size = 
+        sizeof(io_cfg_t)
+        + outputs_cnt * sizeof(output_cfg_t)
+        + total_inputs * sizeof(input_cfg_t)
+        + events_cnt * sizeof(input_event_cfg_t)
+        + actions_cnt * sizeof(action_cfg_t);
 
+    io_cfg_t *cfg = calloc(1, total_size);
+    if (!cfg)
+        return NULL;
+
+    cfg->version       = 1;
     cfg->outputs_count = outputs_cnt;
-    cfg->inputs_count  = btn_cnt + inputs_cnt;
+    cfg->inputs_count  = total_inputs;
     cfg->events_count  = events_cnt;
     cfg->actions_count = actions_cnt;
 
-    uint16_t ev_idx = 0;
+    output_cfg_t       *outputs = cfg_outputs(cfg);
+    input_cfg_t        *inputs  = cfg_inputs(cfg);
+    input_event_cfg_t  *events  = cfg_events(cfg);
+    action_cfg_t       *actions = cfg_actions(cfg);
+
+    uint16_t ev_idx  = 0;
     uint16_t act_idx = 0;
-    uint8_t input_idx = 0;
+    uint8_t  input_idx = 0;
 
     // OUTPUTS
     for (uint8_t i = 0; i < outputs_cnt; i++) {
-        cfg->outputs[i] = (output_cfg_t) {
+        outputs[i] = (output_cfg_t){
             .id = i,
             .type = OUTPUT_SIMPLE,
             .is_on = false,
@@ -189,64 +207,73 @@ io_cfg_t* makeDefaultConfig() {
         };
     }
 
-    // SERVICE BUTTONS
-    for (uint8_t i = 0; i < btn_cnt; i++, input_idx++) {
-        input_cfg_t *in = &cfg->inputs[input_idx];
-        in->id = i + 16;
-        in->type = INPUT_BTN;
-        in->events_count = 1;
-        in->events_offset = ev_idx;
-
-        // EVT_TOGGLE
-        cfg->events[ev_idx++] = (input_event_cfg_t){
-            .event = EVT_TOGGLE,
-            .actions_count = 1,
-            .actions_offset = act_idx
-        };
-        cfg->actions[act_idx++] = (action_cfg_t){
-            .target_node = self_node,
-            .output_id = i,
-            .action = ACT_TOGGLE
-        };          
-    }
-
     // EXTERNAL INPUTS
     for (uint8_t i = 0; i < inputs_cnt; i++, input_idx++) {
-        uint8_t out = i < outputs_cnt ? i : outputs_cnt - 1;
 
-        input_cfg_t *in = &cfg->inputs[input_idx];
+        uint8_t out = (i < outputs_cnt) ? i : (outputs_cnt - 1);
+
+        input_cfg_t *in = &inputs[input_idx];
         in->id = i;
         in->type = INPUT_SWITCH;
         in->events_count = 2;
         in->events_offset = ev_idx;
 
         // EVT_ON
-        cfg->events[ev_idx++] = (input_event_cfg_t){
+        events[ev_idx] = (input_event_cfg_t){
             .event = EVT_ON,
             .actions_count = 1,
             .actions_offset = act_idx
         };
-        cfg->actions[act_idx++] = (action_cfg_t){
+        ev_idx++;
+
+        actions[act_idx++] = (action_cfg_t){
             .target_node = self_node,
             .output_id = out,
             .action = ACT_ON
         };
 
         // EVT_OFF
-        cfg->events[ev_idx++] = (input_event_cfg_t){
+        events[ev_idx] = (input_event_cfg_t){
             .event = EVT_OFF,
             .actions_count = 1,
             .actions_offset = act_idx
         };
-        cfg->actions[act_idx++] = (action_cfg_t){
+        ev_idx++;
+
+        actions[act_idx++] = (action_cfg_t){
             .target_node = self_node,
             .output_id = out,
             .action = ACT_OFF
         };
     }
 
+    // SERVICE BUTTONS
+    for (uint8_t i = 0; i < btn_cnt; i++, input_idx++) {
+
+        input_cfg_t *in = &inputs[input_idx];
+        in->id = i + 16;
+        in->type = INPUT_BTN;
+        in->events_count = 1;
+        in->events_offset = ev_idx;
+
+        // EVT_TOGGLE
+        events[ev_idx] = (input_event_cfg_t){
+            .event = EVT_TOGGLE,
+            .actions_count = 1,
+            .actions_offset = act_idx
+        };
+        ev_idx++;
+
+        actions[act_idx++] = (action_cfg_t){
+            .target_node = self_node,
+            .output_id = i,
+            .action = ACT_TOGGLE
+        };
+    }
+
     return cfg;
 }
+
 
 static const char* eventToStr(event_type_t e) {
     switch (e) {
@@ -278,6 +305,18 @@ static void printNode(const node_uid_t *n) {
     }
 }
 
+bool validateConfig(io_cfg_t* cfg) {
+    if (!cfg) {
+        ESP_LOGE(TAG, "Config is NULL");
+        return false;
+    }
+    if (cfg->outputs_count > 16 || cfg->inputs_count > 32 || cfg->events_count > 64 || cfg->actions_count > 256) {
+        ESP_LOGE(TAG, "Too many elements in config");
+        return false;
+    }
+    return true;
+}
+
 void dumpIoConfig(const io_cfg_t *cfg) {
     if (!cfg) {
         ESP_LOGE(TAG, "IO config is NULL");
@@ -285,46 +324,81 @@ void dumpIoConfig(const io_cfg_t *cfg) {
     }
 
     printf("\n========== IO CONFIG ==========\n");
-    
-    printf("Version (%d):\n", cfg->version);
-    printf("Outputs (%d):\n", cfg->outputs_count);
+
+    printf("Version (%u)\n", cfg->version);
+    printf("Outputs (%u)\n", cfg->outputs_count);
+    printf("Inputs  (%u)\n", cfg->inputs_count);
+    printf("Events  (%u)\n", cfg->events_count);
+    printf("Actions (%u)\n\n", cfg->actions_count);
+
+if (!validateConfig(cfg)) {
+    ESP_LOGE(TAG, "Invalid config.");
+    return;
+}
+
+    const output_cfg_t      *outputs = cfg_outputs(cfg);
+    const input_cfg_t       *inputs  = cfg_inputs(cfg);
+    const input_event_cfg_t *events  = cfg_events(cfg);
+    const action_cfg_t      *actions = cfg_actions(cfg);
+
+    // OUTPUTS
     for (uint8_t i = 0; i < cfg->outputs_count; i++) {
-        const output_cfg_t *o = &cfg->outputs[i];
-        printf("  OUT[%d]: type=%d state=%d",
-            o->id, o->type, o->is_on);
+
+        const output_cfg_t *o = &outputs[i];
+
+        printf("  OUT[%u]: type=%d state=%d",
+               o->id, o->type, o->is_on);
 
         if (o->type == OUTPUT_SIMPLE) {
-            printf(" limit=%ds", o->simple.limit_sec);
+            printf(" limit=%us", o->simple.limit_sec);
         }
+
         printf("\n");
     }
 
-    printf("\nInputs (%d):\n", cfg->inputs_count);
-    for (uint8_t i = 0; i < cfg->inputs_count; i++) {
-        const input_cfg_t *in = &cfg->inputs[i];
+    printf("\n");
 
-        printf("  IN[%d]: id=%d type=%d events=%d\n",
-            i, in->id, in->type, in->events_count);
+    // INPUTS
+    for (uint8_t i = 0; i < cfg->inputs_count; i++) {
+
+        const input_cfg_t *in = &inputs[i];
+
+        printf("  IN[%u]: id=%u type=%d events=%u\n",
+               i, in->id, in->type, in->events_count);
+
+        // защита от битого offset
+        if ((uint32_t)in->events_offset + in->events_count > cfg->events_count) {
+            printf("    !!! INVALID EVENT OFFSET !!!\n");
+            continue;
+        }
 
         for (uint8_t e = 0; e < in->events_count; e++) {
-            const input_event_cfg_t *evt =
-                &cfg->events[in->events_offset + e];
 
-            printf("    EVT[%d]: %s actions=%d\n",
-                e, eventToStr(evt->event), evt->actions_count);
+            const input_event_cfg_t *evt =
+                &events[in->events_offset + e];
+
+            printf("    EVT[%u]: %s actions=%u\n",
+                   e, eventToStr(evt->event), evt->actions_count);
+
+            // защита от битого offset
+            if ((uint32_t)evt->actions_offset + evt->actions_count > cfg->actions_count) {
+                printf("      !!! INVALID ACTION OFFSET !!!\n");
+                continue;
+            }
 
             for (uint16_t a = 0; a < evt->actions_count; a++) {
-                const action_cfg_t *act =
-                    &cfg->actions[evt->actions_offset + a];
 
-                printf("      ACT[%d]: %s ",
-                    a, actionToStr(act->action));
+                const action_cfg_t *act =
+                    &actions[evt->actions_offset + a];
+
+                printf("      ACT[%u]: %s ",
+                       a, actionToStr(act->action));
 
                 if (act->action != ACT_WAIT) {
-                    printf("out=%d node=", act->output_id);
+                    printf("out=%u node=", act->output_id);
                     printNode(&act->target_node);
                 } else {
-                    printf("duration=%ds", act->duration_sec);
+                    printf("duration=%us", act->duration_sec);
                 }
 
                 printf("\n");
@@ -335,6 +409,7 @@ void dumpIoConfig(const io_cfg_t *cfg) {
     printf("================================\n");
 }
 
+
 size_t getConfigSize(io_cfg_t* cfg) {
     return sizeof(io_cfg_t)
                      + cfg->outputs_count * sizeof(output_cfg_t)
@@ -343,32 +418,49 @@ size_t getConfigSize(io_cfg_t* cfg) {
                      + cfg->actions_count * sizeof(action_cfg_t);
 }
 
-void loadBConfig1() {
-    getMac(self_node.mac);
-    
-    // TODO : load config
-    gCfg = makeDefaultConfig();   
-    dumpIoConfig(gCfg);     
+void saveBConfig(io_cfg_t* cfg) {
+    if (saveFile(fileName, (uint8_t*)cfg, getConfigSize(cfg)) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to save config");     
+    }
 }
 
 void loadBConfig() {    
-    const char* fileName = "io_config.bin";
+    if (cfgMutex == NULL) {
+        cfgMutex = xSemaphoreCreateMutex();
+    }
+    getMac(self_node.mac);    
     ESP_LOGI(TAG, "Loading config back from file '%s'...", fileName);
     uint8_t *loadedBuf = NULL;
     size_t loadedSize = 0;    
     if (loadFile(fileName, &loadedBuf, &loadedSize) == ESP_OK) {
-        gCfg = (io_cfg_t*)loadedBuf;        
+        gCfg = malloc(loadedSize);
+        bool ok = false;
+        if (gCfg) {
+            memcpy(gCfg, loadedBuf, loadedSize);                        
+            ok = true;
+        }         
+        if (!ok || !validateConfig(gCfg)) {
+            ESP_LOGE(TAG, "Invalid config in file. Making default config");
+            free(gCfg);
+            gCfg = makeDefaultConfig();  
+            saveBConfig(gCfg);        
+        }
+        // validate config
+        //gCfg = makeDefaultConfig();        
     } else {
         ESP_LOGE(TAG, "Failed to load config. Making default config");
         gCfg = makeDefaultConfig();        
-        if (saveFile(fileName, (const uint8_t*)gCfg, getConfigSize(gCfg)) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to save config");     
-        }
+        // if (saveFile(fileName, (const uint8_t*)gCfg, getConfigSize(gCfg)) != ESP_OK) {
+        //     ESP_LOGE(TAG, "Failed to save config");     
+        // }
+        saveBConfig(gCfg);
     }
     free(loadedBuf);
-    
+    ESP_LOGI(TAG, "Config version %d", getConfigVersion());
+
     dumpIoConfig(gCfg);
 
+    //ESP_LOG_BUFFER_HEXDUMP("cfg", (const uint8_t*)gCfg, getConfigSize(gCfg), CONFIG_LOG_DEFAULT_LEVEL);  
     // return;
     // gCfg = makeDefaultConfig();        
     // if (saveFile(fileName, (const uint8_t*)gCfg, getConfigSize(gCfg)) != ESP_OK) {
@@ -384,13 +476,18 @@ input_cfg_t *findInput(uint8_t input_id) {
         return input;
     }
 
-    const io_cfg_t *cfg = gCfg;    
-    for (uint8_t i = 0; i < cfg->inputs_count; i++) {
-        if (cfg->inputs[i].id == input_id) {
-            return &cfg->inputs[i];            
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        const io_cfg_t *cfg = gCfg;    
+        input_cfg_t *inputs = cfg_inputs(cfg);
+        for (uint8_t i = 0; i < cfg->inputs_count; i++) {
+            if (inputs[i].id == input_id) {
+                input = &inputs[i];
+                break;
+            }
         }
-    }
-    return NULL;
+        xSemaphoreGive(cfgMutex);
+    } 
+    return input;
 }
 
 output_cfg_t *findOutput(uint8_t output_id) {
@@ -400,13 +497,90 @@ output_cfg_t *findOutput(uint8_t output_id) {
         return output;
     }
 
-    const io_cfg_t *cfg = gCfg;    
-    for (uint8_t i = 0; i < cfg->outputs_count; i++) {
-        if (cfg->outputs[i].id == output_id) {
-            return &cfg->outputs[i];            
-        }
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        const io_cfg_t *cfg = gCfg;  
+        output_cfg_t *outputs = cfg_outputs(cfg);  
+        for (uint8_t i = 0; i < cfg->outputs_count; i++) {
+            if (outputs[i].id == output_id) {
+                output = &outputs[i];
+                break;
+            }
+        }        
+        xSemaphoreGive(cfgMutex);
     }
-    return NULL;
+    return output;
+}
+
+uint8_t getConfigOutputsCount() {
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        uint8_t count = gCfg ? gCfg->outputs_count : 0;
+        xSemaphoreGive(cfgMutex);
+        return count;
+    } else {
+        ESP_LOGE(TAG, "Failed to take config mutex");
+        return 0;
+    }
+    //return gCfg ? gCfg->outputs_count : 0;
+}
+
+output_cfg_t *getConfigOutput(uint8_t i) {
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        output_cfg_t *output = gCfg ? &cfg_outputs(gCfg)[i] : NULL;
+        xSemaphoreGive(cfgMutex);
+        return output;
+    } else {
+        ESP_LOGE(TAG, "Failed to take config mutex");
+        return NULL;
+    }
+    //return &cfg_outputs(gCfg)[i];
+}
+
+uint8_t getConfigInputsCount() {
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        uint8_t count = gCfg ? gCfg->inputs_count : 0;
+        xSemaphoreGive(cfgMutex);
+        return count;
+    } else {
+        ESP_LOGE(TAG, "Failed to take config mutex");
+        return 0;
+    }
+    //return gCfg ? gCfg->inputs_count : 0;
+}
+
+input_cfg_t *getConfigInput(uint8_t i) {
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        input_cfg_t *input = gCfg ? &cfg_inputs(gCfg)[i] : NULL;
+        xSemaphoreGive(cfgMutex);
+        return input;
+    } else {
+        ESP_LOGE(TAG, "Failed to take config mutex");
+        return NULL;
+    }
+    //return &cfg_inputs(gCfg)[i];
+}
+
+action_cfg_t *getConfigAction(uint16_t offset) {
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        action_cfg_t *action = gCfg ? &cfg_actions(gCfg)[offset] : NULL;
+        xSemaphoreGive(cfgMutex);
+        return action;
+    } else {
+        ESP_LOGE(TAG, "Failed to take config mutex");
+        return NULL;
+    }
+    //return &cfg_actions(gCfg)[offset];
+}
+
+input_event_cfg_t *getConfigEvent(uint16_t offset) {
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        input_event_cfg_t *event = gCfg ? &cfg_events(gCfg)[offset] : NULL;
+        xSemaphoreGive(cfgMutex);
+        return event;
+    } else {
+        ESP_LOGE(TAG, "Failed to take config mutex");
+        return NULL;
+    }
+    //return &cfg_events(gCfg)[offset];
 }
 
 const char *eventStr(event_type_t event) {
@@ -435,7 +609,15 @@ uint16_t getConfigVersion() {
     return gCfg ? gCfg->version : 0;
 }
 
+uint16_t getConfigSizeDbg() {
+    return getConfigSize(gCfg);
+}
+
 void updateLocalConfig(const io_cfg_t *newCfg) {
+    if (!validateConfig(newCfg)) {
+        ESP_LOGE(TAG, "updateLocalConfig. Invalid config");
+        return;
+    }
     uint16_t currentVersion = getConfigVersion();
     uint16_t newVersion = newCfg ? newCfg->version : 0;
     ESP_LOGI(TAG, "Current config version %d, new config version %d", currentVersion, newVersion);
@@ -443,37 +625,66 @@ void updateLocalConfig(const io_cfg_t *newCfg) {
         ESP_LOGI(TAG, "Config version is the same. No update needed.");
         return;
     }
-    if (gCfg) {
-        free(gCfg->outputs);
-        free(gCfg->inputs);
-        free(gCfg->events);
-        free(gCfg->actions);
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        // backup old config
+        size_t size = getConfigSize(gCfg);
+        ESP_LOGI(TAG, "Backing up old config. Size %d bytes", size);
+        io_cfg_t *oldCfg = malloc(size);
+        if (!oldCfg) {
+            ESP_LOGE(TAG, "Failed to allocate memory for config backup. Update aborted.");
+            xSemaphoreGive(cfgMutex);
+            return;
+        }
+        memcpy(oldCfg, gCfg, size);
         free(gCfg);
+        
+        size = getConfigSize(newCfg);
+        gCfg = malloc(size);
+        if (gCfg) {
+            memcpy(gCfg, newCfg, size);
+            saveBConfig(gCfg);
+            free(oldCfg);
+            ESP_LOGI(TAG, "Local config updated successfully");
+        } else {
+            ESP_LOGE(TAG, "Failed to allocate memory for new config");
+            // restore old config
+            gCfg = oldCfg;                
+        }
+        xSemaphoreGive(cfgMutex);
     }
-    gCfg = malloc(sizeof(io_cfg_t));
-    if (!gCfg) {
-        ESP_LOGE(TAG, "Failed to allocate memory for new config");
-        return;
-    }
-    memcpy(gCfg, newCfg, sizeof(io_cfg_t));
-    ESP_LOGI(TAG, "Local config updated successfully");
 }
 
-void updateBConfig(nodes_cfg_t *cfg) {    
-    for (uint8_t i = 0; i < cfg->nodes_count; i++) {
-        const node_cfg_t *nodeCfg = &cfg->nodes[i];
-        ESP_LOGI(TAG, "Node %d: UID %s, inputs %d, outputs %d",
-            i, strNode(&nodeCfg->uid), nodeCfg->io_cfg.inputs_count, nodeCfg->io_cfg.outputs_count);
-        if (node_uid_equal(&nodeCfg->uid, &self_node)) {    
+void updateBConfig(uint8_t *ptr /*nodes_cfg_t *cfg*/) {    
+    uint8_t nodes_count = *ptr;
+    ptr += sizeof(uint8_t);  // nodes_count shift
+
+    ESP_LOGI(TAG, "Updating binary config. Nodes %d", nodes_count);    
+    for (int i = 0; i < nodes_count; i++) {
+        node_cfg_t *node = (node_cfg_t*)ptr;
+                        
+        size_t io_data_size = getConfigSize(&node->io_cfg);
+        size_t node_size = sizeof(node_uid_t) + io_data_size;
+
+        ESP_LOGI(TAG, "Node %d. Size %d. UID %s, inputs %d, outputs %d",
+                 i, node_size, strNode(&node->uid), node->io_cfg.inputs_count, node->io_cfg.outputs_count);
+        //dumpIoConfig(&node->io_cfg);
+        if (node_uid_equal(&node->uid, &self_node)) {    
             ESP_LOGI(TAG, "This config for local node. Updating IO config...");
-            updateLocalConfig(&nodeCfg->io_cfg);            
+            updateLocalConfig(&node->io_cfg);            
         } else {
-            // send to remote node
-            sendFullConfig(nodeCfg->uid.mac, (uint8_t*)&nodeCfg->io_cfg, sizeof(node_cfg_t));
+            ESP_LOGI(TAG, "This config for another node. Sending it via bus...");
+            sendFullConfig(node->uid.mac, (uint8_t*)&node->io_cfg, io_data_size);
         }
+
+        ptr += node_size;    
     }
 }
 
 bool isOldControllerType() {
     return controllerType == RCV1S || controllerType == RCV1B;
+}
+
+void testConfig() {
+    //dumpIoConfig(gCfg);
+    ESP_LOG_BUFFER_HEXDUMP("cfg", (const uint8_t*)gCfg, getConfigSize(gCfg), CONFIG_LOG_DEFAULT_LEVEL);  
 }

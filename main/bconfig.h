@@ -4,23 +4,15 @@
 #include "esp_system.h"
 #include <stdint.h>
 #include <sys/types.h>
-#define CFG_MAGIC 0x524C5953  // "RLYS"
+
 #define CFG_VERSION 1
-//#define LOCAL_NODE  ((node_uid_t){ .mac = {0, 0, 0, 0, 0, 0} })
-/*
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t total_size;
-    uint32_t crc32;
-} cfg_header_t;
-*/
 
 typedef struct __attribute__((packed)) {
     uint8_t mac[6];
 } node_uid_t;
 
-typedef enum {
+//typedef enum {
+typedef enum __attribute__((packed)) {
     OUTPUT_SIMPLE = 1,
     OUTPUT_TIMED,
     OUTPUT_ONESHOT
@@ -43,28 +35,28 @@ typedef struct __attribute__((packed)) {
     };
 } output_cfg_t;
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     INPUT_BTN = 1,
     INPUT_SWITCH,
     INPUT_SWITCH_INV
 } input_type_t;
 
-typedef enum {
-    ACT_ON = 1,
-    ACT_OFF,
-    ACT_TOGGLE,
-    ACT_WAIT,
-    ACT_ALLOFF
+typedef enum __attribute__((packed)) {
+        ACT_ON = 1,
+        ACT_OFF,
+        ACT_TOGGLE,
+        ACT_WAIT,
+        ACT_ALLOFF
 } action_type_t;
 
 typedef struct __attribute__((packed)) {
     node_uid_t target_node;
     uint8_t output_id;
     action_type_t action;
-    uint16_t duration_sec;   // 0 = без таймера
+    uint16_t duration_sec;   
 } action_cfg_t;
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     EVT_ON = 1,
     EVT_OFF,
     EVT_TOGGLE,
@@ -100,15 +92,16 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint16_t version;
-    output_cfg_t *outputs;
-    input_cfg_t  *inputs;
-    input_event_cfg_t *events;
-    action_cfg_t *actions;
-
     uint8_t outputs_count;
     uint8_t inputs_count;
     uint16_t events_count;
     uint16_t actions_count;
+
+    uint8_t data[];
+    // output_cfg_t outputs[];
+    // input_cfg_t inputs[];
+    // input_event_cfg_t events[];
+    // action_cfg_t actions[];
 } io_cfg_t;
 
 typedef struct __attribute__((packed)) {
@@ -117,8 +110,8 @@ typedef struct __attribute__((packed)) {
 } node_cfg_t;
 
 typedef struct __attribute__((packed)) {
-    node_cfg_t *nodes;
     uint8_t nodes_count;
+    node_cfg_t nodes[];
 } nodes_cfg_t;
 
 typedef enum {
@@ -161,19 +154,27 @@ typedef struct __attribute__((packed)) {
     action_type_t action;
 } io_event_t;
 
-extern io_cfg_t *gCfg;
-
-void loadBConfig();
-
+//extern io_cfg_t *gCfg;
+// config accessors
 input_cfg_t *findInput(uint8_t input_id);
 output_cfg_t *findOutput(uint8_t output_id);
+output_cfg_t *getConfigOutput(uint8_t i);
+uint8_t getConfigOutputsCount();
+uint8_t getConfigInputsCount();
+input_cfg_t *getConfigInput(uint8_t i);
+action_cfg_t *getConfigAction(uint16_t offset);
+input_event_cfg_t *getConfigEvent(uint16_t offset);
+uint16_t getConfigVersion();
+
+void loadBConfig();
+void updateBConfig(uint8_t *ptr);
+void updateLocalConfig(const io_cfg_t *newCfg);
+
+uint16_t getConfigSizeDbg();
 
 const char *eventStr(event_type_t event);
 bool node_uid_equal(const node_uid_t *a, const node_uid_t *b);
 char* strNode(node_uid_t *n);
-uint16_t getConfigVersion();
-void updateBConfig(nodes_cfg_t *cfg);
-void updateLocalConfig(const io_cfg_t *newCfg);
 bool isOldControllerType();
 
 typedef struct __attribute__((packed)) {
@@ -199,5 +200,38 @@ typedef struct __attribute__((packed)) {
     uint8_t  neighborCount;
     neighbor_t neighbors[];
 } device_info_hdr_t;
+
+// static inline output_cfg_t* cfg_outputs(io_cfg_t *cfg);
+// static inline input_cfg_t* cfg_inputs(io_cfg_t *cfg);
+// static inline input_event_cfg_t* cfg_events(io_cfg_t *cfg);
+// static inline action_cfg_t* cfg_actions(io_cfg_t *cfg);
+
+#pragma once
+
+static inline output_cfg_t* cfg_outputs(io_cfg_t *cfg) {
+    return (output_cfg_t*) cfg->data;
+}
+
+static inline input_cfg_t* cfg_inputs(io_cfg_t *cfg) {
+    return (input_cfg_t*)
+        (cfg->data + cfg->outputs_count * sizeof(output_cfg_t));
+}
+
+static inline input_event_cfg_t* cfg_events(io_cfg_t *cfg) {
+    return (input_event_cfg_t*)
+        (cfg->data
+         + cfg->outputs_count * sizeof(output_cfg_t)
+         + cfg->inputs_count * sizeof(input_cfg_t));
+}
+
+static inline action_cfg_t* cfg_actions(io_cfg_t *cfg) {
+    return (action_cfg_t*)
+        (cfg->data
+         + cfg->outputs_count * sizeof(output_cfg_t)
+         + cfg->inputs_count * sizeof(input_cfg_t)
+         + cfg->events_count * sizeof(input_event_cfg_t));
+}
+
+void testConfig();
 
 #endif // BCONFIG_H

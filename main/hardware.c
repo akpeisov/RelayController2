@@ -535,7 +535,7 @@ void determinateControllerType() {
         }
         // write to config
         setConfigValueString("controllerType", controllerTypesData[controllerType].name);
-        ESP_LOGI(TAG, "Controllertype is %s", controllerTypesData[controllerType].name);
+        //ESP_LOGI(TAG, "Controllertype is %s", controllerTypesData[controllerType].name);
     }        
 }
 
@@ -779,10 +779,14 @@ char* getControllerTypeText(uint8_t type) {
 }
 
 uint16_t getOutputs() {
-    uint16_t outputs = 0;
-    if (!gCfg) return 0;
-    for (uint8_t i = 0; i < gCfg->outputs_count; i++) {
-        const output_cfg_t *o = &gCfg->outputs[i];
+    uint16_t outputs = 0;    
+    uint8_t outputsCount = getConfigOutputsCount();
+    if (outputsCount > 4)
+        ESP_LOGW(TAG, "Too many outputs in config %d, max is 4", outputsCount);
+    //outputsCount &= 0x10;
+    for (uint8_t i = 0; i < outputsCount; i++) {
+        //const output_cfg_t *o = &gCfg->outputs[i];
+        const output_cfg_t *o = getConfigOutput(i);// &cfg_outputs(gCfg)[i];
         if (o->is_on) 
             setbit(outputs, o->id & 0xFFFF);
         else
@@ -793,9 +797,12 @@ uint16_t getOutputs() {
 
 uint16_t getInputs() {
     uint16_t inputs= 0;
-    if (!gCfg) return 0;
-    for (uint8_t i = 0; i < gCfg->inputs_count; i++) {
-        const input_cfg_t *in = &gCfg->inputs[i];
+    // if (!gCfg) return 0;
+    uint8_t inputsCount = getConfigInputsCount();
+    for (uint8_t i = 0; i < inputsCount; i++) {
+        //const input_cfg_t *in = &gCfg->inputs[i];
+        // const input_cfg_t *in = &cfg_inputs(gCfg)[i]; 
+        const input_cfg_t *in = getConfigInput(i);
         if (in->is_on) 
             setbit(inputs, in->id & 0xFFFF);
         else
@@ -864,7 +871,9 @@ void actionsTask(void *pvParameter) {
             durationCnt--;            
             vTaskDelay(1000 / portTICK_PERIOD_MS);
         } else {
-            action_cfg_t *act = &gCfg->actions[evt->actions_offset + i];            
+            //action_cfg_t *act = &cfg_actions(gCfg)[evt->actions_offset + i];            
+            action_cfg_t *act = getConfigAction(evt->actions_offset + i);
+            
             //ESP_LOGI(TAG, "process action %d output %d", act->action, act->output_id);            
             // TODO : print node
             //ESP_LOGI(TAG, "process action %d on output %d node %s", act->action, act->output_id, strNode(&act->target_node));
@@ -908,8 +917,6 @@ uint8_t correctInput(uint8_t pInput) {
 }
 
 void processInput(uint8_t input_id, uint8_t event_id) {
-    //ESP_LOGI(TAG, "processInput %d event %d", number, event);
-    
     // find config entity    
     uint8_t inputId = correctInput(input_id);
     ESP_LOGI(TAG, "processInput. orig %d, corrected %d", input_id, inputId);
@@ -971,11 +978,14 @@ void processInput(uint8_t input_id, uint8_t event_id) {
             if (ioevent) ioevent(e);
         }
         
-        const io_cfg_t *cfg = gCfg;    
+        // const io_cfg_t *cfg = gCfg;    
         const input_event_cfg_t *evt = NULL;
         for (uint8_t i = 0; i < input->events_count; i++) {
-            const input_event_cfg_t *e =
-                &cfg->events[input->events_offset + i];
+            // const input_event_cfg_t *e =
+            //     &cfg->events[input->events_offset + i];
+            // const input_event_cfg_t *e =
+            //     &cfg_events(gCfg)[input->events_offset + i];                    
+            const input_event_cfg_t *e = getConfigEvent(input->events_offset + i);    
             if (e->event == event) {
                 evt = e;
                 break;
@@ -1003,10 +1013,13 @@ void processInput(uint8_t input_id, uint8_t event_id) {
 }
 
 void outputTimer() {        
-    if (!gCfg) return;    
-    const io_cfg_t *cfg = gCfg;    
-    for (uint8_t i = 0; i < cfg->outputs_count; i++) {
-        output_cfg_t *o = &cfg->outputs[i];        
+    // if (!gCfg) return;    
+    // const io_cfg_t *cfg = gCfg;  
+    uint8_t outputsCount = getConfigOutputsCount();  
+    for (uint8_t i = 0; i < outputsCount; i++) {
+        //output_cfg_t *o = &cfg->outputs[i];        
+        //output_cfg_t *o = &cfg_outputs(gCfg)[i];                
+        output_cfg_t *o = getConfigOutput(i);
         if (o->type == OUTPUT_TIMED) {
             if (--o->timer == 0) {
                 if (o->is_on) {                
@@ -1071,12 +1084,11 @@ void IOTask() {
             uint16_t outs = getOutputs();
             uint16_t ins = getInputs();
             if (oldOuts != outs) {
-                oldOuts = outs;
-                ESP_LOGW(TAG, "New outputs %d", outs);
-                //updateStateHW(outs, ins, outs);
+                ESP_LOGW(TAG, "New outputs %d, old outputs %d", outs, oldOuts);
+                oldOuts = outs;                                
             }
             updateStateHW(outs, ins, outs);            
-			xSemaphoreGive(gMutex);
+            xSemaphoreGive(gMutex);
         }
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }

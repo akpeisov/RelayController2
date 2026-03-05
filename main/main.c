@@ -42,7 +42,6 @@ void app_main(void) {
     // init hardware    
     initHardware(); // controllerType is not identified for old devices
     loadBConfig();
-    
     rs485_init();
     startIOTask();
     setRGBFace("yellow");

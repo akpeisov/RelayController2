@@ -28,6 +28,7 @@
 
 #define MAGIC 0xA5
 #define MAXTASKNAME 22
+#define MAX_WAITING_TIME 1000//300
 #define BROADCAST_MAC "\xFF\xFF\xFF\xFF\xFF\xFF"
 
 static node_uid_t self_node;
@@ -36,17 +37,17 @@ static TBusEvent busevent = NULL;
 
 typedef enum {
     MSG_HELLO     = 1,
-    MSG_HELLO_ACK = 2,
-    MSG_EVENT     = 3,
-    MSG_ACTION    = 4,
-    MSG_ACTION_ACK = 5,
-    MSG_CFG_CHUNK = 6,
-    MSG_CFG_ACK   = 7,
-    MSG_CFG_START = 8,
-    MSG_CFG_END   = 9,
-    MSG_CFG_NACK  = 10,  
-    MSG_PING      = 11,
-    MSG_STATUS    = 12,
+    MSG_HELLO_ACK,
+    MSG_EVENT,
+    MSG_ACTION,
+    MSG_ACK,
+    MSG_CFG_CHUNK,
+    //MSG_CFG_ACK   = 7,
+    MSG_CFG_START,
+    MSG_CFG_END,
+    MSG_CFG_NACK,  
+    MSG_PING,
+    MSG_STATUS,
 } msg_type_t;
 
 typedef struct __attribute__((packed)) {
@@ -83,11 +84,21 @@ typedef struct {
     uint32_t timestamp;  
 } queued_msg_t;
 
+typedef struct __attribute__((packed)) {
+    uint8_t  io_type;
+    uint8_t  io_id;
+    uint8_t  state;
+    uint16_t output_states;
+    uint16_t input_states;
+    uint8_t  online;
+    uint8_t  model;
+} device_payload_t;
+
 // config specific
 typedef struct __attribute__((packed)) {
     uint32_t total_size;
     uint16_t crc16;
-    uint16_t chunk_size;
+    uint16_t chunk_size;    
 } cfg_start_t;
 
 typedef struct __attribute__((packed)) {
@@ -222,10 +233,13 @@ const char* msg_type_to_str(msg_type_t msg_type) {
         case MSG_HELLO_ACK:  return "MSG_HELLO_ACK";
         case MSG_EVENT:      return "MSG_EVENT";
         case MSG_ACTION:     return "MSG_ACTION";
-        case MSG_ACTION_ACK: return "MSG_ACTION_ACK";
-        case MSG_CFG_CHUNK:  return "MSG_CFG_CHUNK";
-        case MSG_CFG_ACK:    return "MSG_CFG_ACK";
-        case MSG_PING:       return "MSG_PING";
+        case MSG_ACK:        return "MSG_ACK";
+        case MSG_CFG_CHUNK:  return "MSG_CFG_CHUNK";        
+        case MSG_CFG_START:  return "MSG_CFG_START";
+        case MSG_CFG_END:    return "MSG_CFG_END";
+        case MSG_CFG_NACK:   return "MSG_CFG_NACK";
+        case MSG_PING:       return "MSG_PING";        
+        case MSG_STATUS:     return "MSG_STATUS";
         default:             return "MSG_UNKNOWN";
     }
 }
@@ -263,11 +277,11 @@ static void rs485_send(uint8_t *dst, msg_type_t type, void *payload, uint16_t le
                 break;
             }
         }
-        if (!node_found) {
-            ESP_LOGW(TAG, "Attempt to send to unknown node %02X%02X%02X%02X%02X%02X", 
-                     dst[0], dst[1], dst[2], dst[3], dst[4], dst[5]);
-            return;
-        }
+        // if (!node_found) {
+        //     ESP_LOGW(TAG, "Attempt to send to unknown node %02X%02X%02X%02X%02X%02X", 
+        //              dst[0], dst[1], dst[2], dst[3], dst[4], dst[5]);
+        //     return;
+        // }
     }
 
     uint8_t buf[UART_BUF];
@@ -287,10 +301,6 @@ static void rs485_send(uint8_t *dst, msg_type_t type, void *payload, uint16_t le
     ESP_LOGI(TAG, "TX %s", printFrame(f));
     uart_write_bytes(UART_PORT, buf, sizeof(frame_t) + len);
     uart_wait_tx_done(UART_PORT, pdMS_TO_TICKS(20));    
-    
-    // vTaskDelay(pdMS_TO_TICKS(10));
-    // ESP_LOGI("uart_set_rts ", "level=%d", gpio_get_level(UART_RTS_OLD));
-    // gpio_dump_io_configuration(stdout, (1ULL << UART_RTS_OLD));
 }
 
 static bool rs485_send_with_arbitration(uint8_t *dst, msg_type_t type, void *payload, 
@@ -375,7 +385,7 @@ static void senderTask(void *arg) {
                     uint32_t notified;
                     if (msg->waiting_task)
                             ESP_LOGI(TAG, "Waiting have task. ACK for msg_id %d from task %s", msg->msg_id, pcTaskGetName(msg->waiting_task));
-                    if (msg->waiting_task && xTaskNotifyWait(0, UINT32_MAX, &notified, pdMS_TO_TICKS(300)) == pdTRUE) {
+                    if (msg->waiting_task && xTaskNotifyWait(0, UINT32_MAX, &notified, pdMS_TO_TICKS(MAX_WAITING_TIME)) == pdTRUE) {
                         ESP_LOGI(TAG, "notify ACK received for msg_id %d", msg->msg_id);
                         //ack_received = true;
                         break;
@@ -540,17 +550,17 @@ static void handle_frame(frame_t *f) {
                 if (busevent) busevent(evt);                
                 // ack отправляет тот же msgId, но не для бродкастовых пакетов
                 if (memcmp(f->dst, BROADCAST_MAC, 6) != 0)
-                    rs485_send(f->src, MSG_ACTION_ACK, NULL, 0, f->msg_id);                
+                    rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);                
             }            
             break;
          
-        case MSG_ACTION_ACK:
+        case MSG_ACK:
             xSemaphoreTake(pending_mux, portMAX_DELAY);
             for (int i = 0; i < MAX_PENDING; i++) {
                 if (pending[i].msg_id == f->msg_id && pending[i].task != NULL) {
                     ESP_LOGI(TAG, "found pending. Received ACK for msg_id %d", f->msg_id);
                     xTaskNotify(pending[i].task, 1, eSetValueWithOverwrite);
-                    pending[i].task = NULL;  // сразу освобождаем слот
+                    pending[i].task = NULL;
                     break;
                 }
             }
@@ -559,9 +569,9 @@ static void handle_frame(frame_t *f) {
 
         case MSG_CFG_CHUNK: {
             cfg_chunk_t *c = (cfg_chunk_t*)f->payload;
-
             memcpy(rx.buffer + c->seq * rx.chunk_size, c->data, c->len);
             rx.received_chunks++;
+            rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);
             break;
         }
 
@@ -573,7 +583,16 @@ static void handle_frame(frame_t *f) {
             rx.chunk_size = s->chunk_size;
             rx.received_chunks = 0;
 
+            if (rx.buffer) {
+                ESP_LOGE(TAG, "rx.buffer for receive config already allocated. Free it...");
+                free(rx.buffer);
+                rx.buffer = NULL;
+            }                
             rx.buffer = malloc(rx.total_size);
+            if (!rx.buffer) {
+                ESP_LOGE(TAG, "Error allocating buffer for receive config");
+            }
+            rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);                
             break;
         }    
 
@@ -585,15 +604,23 @@ static void handle_frame(frame_t *f) {
                 //apply_config(rx.buffer);
                 io_cfg_t *newCfg = (io_cfg_t*)rx.buffer;
                 updateLocalConfig(newCfg);
-                send_msg(f->src, MSG_CFG_ACK, NULL, 0);
+                send_msg(f->src, MSG_ACK, NULL, 0);
             } else {
                 ESP_LOGE(TAG, "CFG CRC ERROR");
                 send_msg(f->src, MSG_CFG_NACK, NULL, 0);
             }
 
-            free(rx.buffer);
+            if (rx.buffer) {
+                free(rx.buffer);
+                rx.buffer = NULL;
+            }
+            rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);                
             break;
         }
+
+        case MSG_CFG_NACK:
+            ESP_LOGE(TAG, "Config NACK received");
+            break;
 
         case MSG_PING:
             // nothing
@@ -650,8 +677,7 @@ void sendNodeAction(action_cfg_t *act) {
     msg->type = MSG_ACTION;
     msg->msg_id = next_msg_id();
     msg->payload = payload;
-    msg->payload_len = 2;
-    //msg->retries = 2;  // 3 попытки всего
+    msg->payload_len = 2;    
     msg->require_ack = true;
     //msg->waiting_task = xTaskGetCurrentTaskHandle();
     
@@ -662,25 +688,39 @@ void sendNodeEvent(node_io_event_t event, uint16_t inputStates, uint16_t outputS
     // отправка события изменения IO на все ноды
     // передавать события изменения IO вместе с их текущим состояием, а далее если нода офлайн то отправить от кого-то кто онлайн
     queued_msg_t *msg = malloc(sizeof(queued_msg_t));
-    if (!msg) return;
+    if (!msg) {
+        ESP_LOGE(TAG, "Can't allocate memory for nodeevent");
+        return;
+    }
+
+    device_payload_t *payload = malloc(sizeof(device_payload_t));
+    if (payload != NULL) {
+        payload->io_type       = event.io_type;
+        payload->io_id         = event.io_id;
+        payload->state         = event.state;
+        payload->output_states = outputStates;
+        payload->input_states  = inputStates;
+        payload->online        = node_online ? 1 : 0;
+        payload->model         = controllerType;
+    }
         
-    size_t payload_size = 9; // io_type(1) + io_id(1) + state(1) + outputStates(2) + inputStates(2) + online(1) + model(1)
-    uint8_t *payload = malloc(payload_size);
-    payload[0] = event.io_type;
-    payload[1] = event.io_id;
-    payload[2] = event.state;
-    payload[3] = outputStates & 0xFF;
-    payload[4] = (outputStates >> 8) & 0xFF;
-    payload[5] = inputStates & 0xFF;
-    payload[6] = (inputStates >> 8) & 0xFF;
-    payload[7] = node_online ? 1 : 0;
-    payload[8] = controllerType;
+    // size_t payload_size = 9; // io_type(1) + io_id(1) + state(1) + outputStates(2) + inputStates(2) + online(1) + model(1)
+    // uint8_t *payload = malloc(payload_size);
+    // payload[0] = event.io_type;
+    // payload[1] = event.io_id;
+    // payload[2] = event.state;
+    // payload[3] = outputStates & 0xFF;
+    // payload[4] = (outputStates >> 8) & 0xFF;
+    // payload[5] = inputStates & 0xFF;
+    // payload[6] = (inputStates >> 8) & 0xFF;
+    // payload[7] = node_online ? 1 : 0;
+    // payload[8] = controllerType;
 
     memcpy(msg->dst, BROADCAST_MAC, 6);
     msg->type = MSG_EVENT;
     msg->msg_id = next_msg_id();
     msg->payload = payload;
-    msg->payload_len = payload_size;
+    msg->payload_len = sizeof(device_payload_t);
     msg->require_ack = false;
     msg->waiting_task = NULL;
     
@@ -708,14 +748,13 @@ void sendNodeStatus(bool online) {
 }
 
 void sendFullConfig(uint8_t *dst, uint8_t *cfg, uint32_t size) {
-
     uint16_t chunk_size = 128;
     uint16_t crc = CRC16(cfg, size);
 
     cfg_start_t start = {
         .total_size = size,
         .crc16 = crc,
-        .chunk_size = chunk_size
+        .chunk_size = chunk_size,        
     };
 
     send_msg(dst, MSG_CFG_START, &start, sizeof(start));
@@ -740,7 +779,6 @@ void sendFullConfig(uint8_t *dst, uint8_t *cfg, uint32_t size) {
     cfg_end_t end = {.last_seq = seq - 1};
     send_msg(dst, MSG_CFG_END, &end, sizeof(end));
 }
-
 
 static void discoveryTask(void *arg) {
     ESP_LOGI(TAG, "Starting RS485 discovery task...");
@@ -805,6 +843,7 @@ void rs485_init() {
     msg_queue = xQueueCreate(QUEUE_SIZE, sizeof(queued_msg_t*));
     bus_mutex = xSemaphoreCreateMutex();    
     bus_access_sem = xSemaphoreCreateMutex();
+    rx.buffer = NULL;
         
     xTaskCreate(senderTask, "sender_task", 4096, NULL, 6, NULL);    
     xTaskCreate(discoveryTask, "discovery", 2048, NULL, 5, NULL);
