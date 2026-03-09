@@ -256,10 +256,7 @@ void setI2COut(uint8_t adr, uint8_t num, uint16_t value) {
     if (value > MAXPWM) {
         value = MAXPWM;
     }
-    //if (xSemaphoreTake(gMutex, portMAX_DELAY) == pdTRUE) {        
-        pca9685_set_pwm_value(&devices[adr].device, num, value);
-      //  xSemaphoreGive(gMutex); 
-    //}   
+    pca9685_set_pwm_value(&devices[adr].device, num, value);    
 }
 
 static void updateIndicators(const hw_state_t *s) {
@@ -544,10 +541,7 @@ uint8_t readFrom8574(uint8_t adr) {
 //return 0;    
     uint8_t inputs;
     //adr 1,2,5,6
-    //if (xSemaphoreTake(gMutex, portMAX_DELAY) == pdTRUE) {        
-        pcf8574_port_read(&devices[adr].device, &inputs);
-        //xSemaphoreGive(gMutex); 
-    //}       
+    pcf8574_port_read(&devices[adr].device, &inputs);
     return inputs;
 }
 
@@ -844,6 +838,8 @@ void setOutput(action_cfg_t *act) {
         e.state = output->is_on;
         e.timer = output->timer;        
         e.node = act->target_node;
+        e.outputsStates = getOutputs();
+        e.inputStates = getInputs();
         if (ioevent) ioevent(e);
 
         // sending current state to bus
@@ -891,29 +887,40 @@ void actionsTask(void *pvParameter) {
 }
 
 uint8_t correctInput(uint8_t pInput) {
-    if (controllerType == RCV1S) {
-        if ((pInput >= 4) && (pInput <= 7)) {
-            return pInput+12;
-        }
-        if ((pInput >= 12) && (pInput <= 15)) {
-            return pInput-12;
-        }
-    } else if (controllerType == RCV1B) {
-        if ((pInput >= 16) && (pInput <= 31)) {
-            return pInput-16;
-        }
-        if (pInput <= 7) { 
-            return pInput+18;
-        }
-        if ((pInput >= 14) && (pInput <= 15)) {
-            return pInput+2;
-        }
-    } else if ((controllerType == RCV2S) && pInput >= 8) {
-        return pInput+8;
-    } else if ((controllerType == RCV2B) && 1==1) {    // TODO : ???
-        return pInput;
+    uint8_t cInput = 255;
+    switch (controllerType) {
+        case RCV1S:
+            if ((pInput >= 4) && (pInput <= 7)) {
+                cInput = pInput+12;
+            } else if ((pInput >= 12) && (pInput <= 15)) {
+                cInput = pInput-12;
+            }
+            break;
+        case RCV1B:
+            if ((pInput >= 16) && (pInput <= 31)) {
+                cInput = pInput-16;
+            } else if (pInput <= 7) { 
+                cInput = pInput+18;
+            } else if ((pInput >= 14) && (pInput <= 15)) {
+                cInput = pInput+2;
+            }
+            break;
+        case RCV2S:
+            if (pInput >=8)
+                cInput = pInput+8;
+            else
+                cInput = pInput;
+            break;
+        case RCV2M:
+                // TODO: inplement
+            break;
+        case RCV2B:
+                cInput = pInput;
+            break;
+        default:
+            cInput = 255;
     }
-    return 255;
+    return cInput;
 }
 
 void processInput(uint8_t input_id, uint8_t event_id) {

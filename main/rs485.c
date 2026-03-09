@@ -46,6 +46,7 @@ typedef enum {
     MSG_CFG_START,
     MSG_CFG_END,
     MSG_CFG_NACK,  
+    MSG_CFG_VER,
     MSG_PING,
     MSG_STATUS,
 } msg_type_t;
@@ -174,7 +175,7 @@ static void add_or_update_node(uint8_t *mac, model_t model,
         // TODO : states, model?
         memcpy(evt.target_node, mac, 6);
         evt.online = online;
-        evt.model = model;
+        evt.model = model;        
         evt.inputStates = inputStates;
         evt.outputStates = outputStates;
         if (busevent) busevent(evt);
@@ -466,19 +467,61 @@ void send_msg(uint8_t *dst, msg_type_t type, void *payload, uint16_t len) {
     addQueue(msg);
 }
 
+// Возвращает true если получен ACK, false если таймаут
+static bool send_msg_sync(uint8_t *dst, msg_type_t type, void *payload, 
+                           uint16_t len, uint32_t timeout_ms) {
+    queued_msg_t *msg = malloc(sizeof(queued_msg_t));
+    if (!msg) return false;
 
-// void send_msg(uint8_t *dst, msg_type_t type, void *payload, uint16_t len) {
-//     queued_msg_t *msg = malloc(sizeof(queued_msg_t));
-//     memcpy(msg->dst, dst, 6);
-//     msg->type = type;
-//     msg->msg_id = next_msg_id();
-//     msg->payload = payload;
-//     msg->payload_len = len;    
-//     msg->require_ack = true;
-//     msg->waiting_task = NULL;
-    
-//     addQueue(msg);
-// }
+    memcpy(msg->dst, dst, 6);
+    msg->type = type;
+    msg->msg_id = next_msg_id();
+    msg->require_ack = true;
+    msg->waiting_task = xTaskGetCurrentTaskHandle(); // <-- текущая таска ждёт
+
+    if (len > 0 && payload) {
+        msg->payload = malloc(len);
+        if (!msg->payload) { free(msg); return false; }
+        memcpy(msg->payload, payload, len);
+        msg->payload_len = len;
+    } else {
+        msg->payload = NULL;
+        msg->payload_len = 0;
+    }
+
+    // Регистрируем pending ДО постановки в очередь
+    xSemaphoreTake(pending_mux, portMAX_DELAY);
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (pending[i].task == NULL) {
+            pending[i].msg_id = msg->msg_id;
+            pending[i].task = msg->waiting_task;
+            break;
+        }
+    }
+    xSemaphoreGive(pending_mux);
+
+    addQueue(msg);
+
+    // Ждём уведомление от handle_frame (MSG_ACK)
+    uint32_t notified = 0;
+    bool ack = xTaskNotifyWait(0, UINT32_MAX, &notified, 
+                                pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+
+    if (!ack) {
+        // Чистим pending при таймауте
+        xSemaphoreTake(pending_mux, portMAX_DELAY);
+        for (int i = 0; i < MAX_PENDING; i++) {
+            if (pending[i].task == xTaskGetCurrentTaskHandle()) {
+                pending[i].task = NULL;
+                pending[i].msg_id = 0;
+                break;
+            }
+        }
+        xSemaphoreGive(pending_mux);
+    }
+
+    return ack;
+}
 
 static void handle_frame(frame_t *f) {    
     //ESP_LOGI(TAG, "Received frame type %s, len %d", msg_type_to_str(f->type), f->len);
@@ -520,7 +563,6 @@ static void handle_frame(frame_t *f) {
             inputStates = f->payload[5] | (f->payload[6] << 8);         
             isonline = f->payload[7] != 0;
             model = f->payload[8];
-            
             add_or_update_node(f->src, model, outputStates, inputStates, isonline); 
 
             // publish BEVT_IOEVENT
@@ -529,8 +571,10 @@ static void handle_frame(frame_t *f) {
             evt.io_event.io_type = f->payload[0];
             evt.io_event.io_id = f->payload[1];
             evt.io_event.state = f->payload[2];
-            evt.inputStates = inputStates;
-            evt.outputStates = outputStates;
+            //evt.inputStates = inputStates; // for new node only?
+            //evt.outputStates = outputStates; // for new node only?
+            evt.io_event.inputStates = inputStates;
+            evt.io_event.outputsStates = outputStates;
             evt.online = isonline;
             memcpy(evt.io_event.node.mac, f->src, 6);
             if (busevent) busevent(evt);
@@ -606,11 +650,18 @@ static void handle_frame(frame_t *f) {
                 ESP_LOGI(TAG, "CFG OK");
                 //apply_config(rx.buffer);
                 io_cfg_t *newCfg = (io_cfg_t*)rx.buffer;
-                updateLocalConfig(newCfg);
-                send_msg(f->src, MSG_ACK, NULL, 0);
+                uint16_t ver = updateLocalConfig(newCfg);
+                rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);
+                uint8_t *payload = malloc(3);
+                if (payload) {
+                    payload[0] = ver & 0xFF; 
+                    payload[1] = (ver >> 8) & 0xFF;                    
+                    payload[2] = isonline;
+                    send_msg(f->src, MSG_CFG_VER, payload, 3);
+                }                
             } else {
                 ESP_LOGE(TAG, "CFG CRC ERROR");
-                send_msg(f->src, MSG_CFG_NACK, NULL, 0);
+                rs485_send(f->src, MSG_CFG_NACK, NULL, 0, f->msg_id);
             }
 
             if (rx.buffer) {
@@ -620,6 +671,14 @@ static void handle_frame(frame_t *f) {
             rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);                
             break;
         }
+
+        case MSG_CFG_VER:            
+            evt.event = BEVT_CFG_VER;
+            evt.configVersion = f->payload[0] | (f->payload[1] << 8);            
+            evt.online = f->payload[2];
+            memcpy(evt.target_node, f->src, 6);
+            if (busevent) busevent(evt);              
+            break;
 
         case MSG_CFG_NACK:
             ESP_LOGE(TAG, "Config NACK received");
@@ -757,10 +816,56 @@ void sendFullConfig(uint8_t *dst, uint8_t *cfg, uint32_t size) {
     cfg_start_t start = {
         .total_size = size,
         .crc16 = crc,
+        .chunk_size = chunk_size,
+    };
+
+    ESP_LOGI(TAG, "CFG_START sending...");
+    if (!send_msg_sync(dst, MSG_CFG_START, &start, sizeof(start), 2000)) {
+        ESP_LOGE(TAG, "CFG_START: no ACK, aborting");
+        return;
+    }
+    ESP_LOGI(TAG, "CFG_START ACK OK");
+
+    uint16_t seq = 0;
+    for (uint32_t offset = 0; offset < size; offset += chunk_size) {
+        uint16_t len = (chunk_size < size - offset) ? chunk_size : (uint16_t)(size - offset);
+
+        uint8_t buf[sizeof(cfg_chunk_t) + 128];
+        cfg_chunk_t *c = (cfg_chunk_t *)buf;
+        c->seq = seq;
+        c->len = len;
+        memcpy(c->data, cfg + offset, len);
+
+        ESP_LOGI(TAG, "CFG_CHUNK seq %d sending...", seq);
+        if (!send_msg_sync(dst, MSG_CFG_CHUNK, buf, sizeof(cfg_chunk_t) + len, 2000)) {
+            ESP_LOGE(TAG, "CFG_CHUNK seq %d: no ACK, aborting", seq);
+            return;
+        }
+        seq++;
+    }
+
+    cfg_end_t end = { .last_seq = seq - 1 };
+    ESP_LOGI(TAG, "CFG_END sending...");
+    if (!send_msg_sync(dst, MSG_CFG_END, &end, sizeof(end), 3000)) {
+        ESP_LOGE(TAG, "CFG_END: no ACK");
+        // конфиг мог примениться — логируем но не считаем фатальным
+    }
+    ESP_LOGI(TAG, "Config transfer complete");
+}
+/*
+void sendFullConfigOld(uint8_t *dst, uint8_t *cfg, uint32_t size) {
+    uint16_t chunk_size = 128;
+    uint16_t crc = CRC16(cfg, size);
+
+    cfg_start_t start = {
+        .total_size = size,
+        .crc16 = crc,
         .chunk_size = chunk_size,        
     };
 
     send_msg(dst, MSG_CFG_START, &start, sizeof(start));
+
+    // wait for ack
 
     uint16_t seq = 0;
     for (uint32_t offset = 0; offset < size; offset += chunk_size) {
@@ -782,32 +887,38 @@ void sendFullConfig(uint8_t *dst, uint8_t *cfg, uint32_t size) {
     cfg_end_t end = {.last_seq = seq - 1};
     send_msg(dst, MSG_CFG_END, &end, sizeof(end));
 }
+    */
 
 static void discoveryTask(void *arg) {
     ESP_LOGI(TAG, "Starting RS485 discovery task...");
     
     while (1) {        
         queued_msg_t *msg = malloc(sizeof(queued_msg_t));    
-        msg->type = MSG_HELLO;    
-        memcpy(msg->dst, BROADCAST_MAC, 6);        
-        //msg->payload = &controllerType;
-        uint8_t *payload = malloc(6);
-        if (payload) {
-            uint16_t outputStates = getOutputs();
-            uint16_t inputStates = getInputs();
-            payload[0] = controllerType;
-            payload[1] = outputStates & 0xFF;
-            payload[2] = (outputStates >> 8) & 0xFF;
-            payload[3] = inputStates & 0xFF;
-            payload[4] = (inputStates >> 8) & 0xFF;
-            payload[5] = node_online;
-            msg->payload = payload;
-        } // TODO : when it free?
-        msg->payload_len = 6;
-        msg->require_ack = false;
-        msg->waiting_task = NULL;
-        msg->msg_id = next_msg_id();    
-        addQueue(msg);
+        if (msg) {
+            msg->type = MSG_HELLO;    
+            memcpy(msg->dst, BROADCAST_MAC, 6);        
+            //msg->payload = &controllerType;
+            uint8_t *payload = malloc(6);
+            if (payload) {
+                uint16_t outputStates = getOutputs();
+                uint16_t inputStates = getInputs();
+                payload[0] = controllerType;
+                payload[1] = outputStates & 0xFF;
+                payload[2] = (outputStates >> 8) & 0xFF;
+                payload[3] = inputStates & 0xFF;
+                payload[4] = (inputStates >> 8) & 0xFF;
+                payload[5] = node_online;
+                msg->payload = payload;
+
+                msg->payload_len = 6;
+                msg->require_ack = false;
+                msg->waiting_task = NULL;
+                msg->msg_id = next_msg_id();    
+                addQueue(msg);
+            } else {
+                free(msg);
+            } 
+        }
         vTaskDelay(pdMS_TO_TICKS(1000 * 30));
     }
 }
@@ -839,7 +950,7 @@ void rs485_init() {
     uart_driver_install(UART_PORT, UART_BUF, UART_BUF, 0, NULL, 0);
     uart_set_mode(UART_PORT, UART_MODE_RS485_HALF_DUPLEX);  
     
-    xTaskCreate(uart_rx_task, "uart_rx", 4096, NULL, 10, NULL);    
+    xTaskCreate(uart_rx_task, "uart_rx", 8192, NULL, 10, NULL);    
     pending_mux = xSemaphoreCreateMutex();
 
     srand((unsigned int)esp_timer_get_time());

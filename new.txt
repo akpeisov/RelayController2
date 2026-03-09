@@ -40,6 +40,8 @@ TODO
 - в момент загрузки старого сообщения прилетают, но только как только вебсокет инициализируется то все пропадает, т.е. сообщения от нового не прилетают. Но если подождать чтобы сокет подключился то сообщения прилетают
 
 
+docker logs --tail 100 rss
+
 
 Каждому событию нужен уникальный ID, чтобы сервер умел делать дедупликацию:
 event_id = <node_uid> + <uptime_ms> + <local_counter>
@@ -107,3 +109,23 @@ Backtrace: 0x4008a22d:0x3ffc4080 0x4008a1f5:0x3ffc40a0 0x40092701:0x3ffc40c0 0x4
 --- 0x400df2fe: IOTask at /home/erik/projects/RelayController2/main/hardware.c:995
 --- 0x4008af59: vPortTaskWrapper at /home/erik/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
 
+
+проверка какие докеры используют сеть.
+docker network inspect gitlab-net
+корректный ввыод в 
+"Containers": {
+            "02bccf06c27cee547adde81c597b864796ec9db3a0e51e379ba042c0cc11bc41": {
+                "Name": "gitlab-server",
+                "EndpointID": "2ca26dedb9592e600321ecb5fa4449c51b808e2bd70faaa1f4612feffc733c2c",
+                "MacAddress": "02:42:ac:16:00:03",
+                "IPv4Address": "172.22.0.3/16",
+                "IPv6Address": ""
+            },
+            "ef50051dbd0fcab07f60481e981394ccf324ff2c85fd3986225460f43bc5d195": {
+                "Name": "gitlab-runner",
+                "EndpointID": "6563de0fd39bc2f948e33d7e11278254cb1521b35d86b24d841ea9bc0c4590f2",
+                "MacAddress": "02:42:ac:16:00:02",
+                "IPv4Address": "172.22.0.2/16",
+                "IPv6Address": ""
+            }
+        },

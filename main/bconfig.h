@@ -179,8 +179,8 @@ input_event_cfg_t *getConfigEvent(uint16_t offset);
 uint16_t getConfigVersion();
 
 void loadBConfig();
-void updateBConfig(uint8_t *ptr);
-void updateLocalConfig(const io_cfg_t *newCfg);
+uint16_t updateBConfig(uint8_t *ptr);
+uint16_t updateLocalConfig(const io_cfg_t *newCfg);
 
 uint16_t getConfigSizeDbg();
 

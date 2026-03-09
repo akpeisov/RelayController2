@@ -397,6 +397,19 @@ void IOhandler(io_event_t event) {
     sendEvent(event);    
 }
 
+void setConfigResult(uint8_t *mac, uint16_t version) {
+    size_t total_len = 9;
+    uint8_t *packet = malloc(total_len);
+    if (packet) {
+        packet[0] = 'C';        
+        memcpy(packet+1, mac, sizeof(node_uid_t));
+        packet[7] = version & 0xFF;
+        packet[8] = (version >> 8) & 0xFF;
+        WSSendPacket((uint8_t*)packet, total_len);        
+        free(packet);
+    }
+}
+
 void BusHandler(bus_event_t event) {
     // может прилететь событие онлайн/оффлан, новой ноды, а может изменения состояния IO других нод
     // BEVT_NODESTATUS - изменение статуса подключения к серверу ноды
@@ -416,22 +429,34 @@ void BusHandler(bus_event_t event) {
             // act.target_node = event.io_event.node;
             act.action = event.io_action.action;
             act.output_id = event.io_action.io_id;
-            act.target_node = event.io_event.node;
+            act.target_node = event.io_action.node;
             setOutput(&act);
             break;
         case BEVT_IOEVENT:
             if (!event.online) {
-                // only for offline
+                // only for offline node                
                 sendEvent(event.io_event);
                 // sendEvent(event.io_event.node.mac, event.io_event.io_type, event.io_event.io_id,
                 //     event.io_event.state, event.io_event.timer, event.outputStates, event.inputStates);                
             }
             break;
+        case BEVT_CFG_VER:
+            if (!event.online) {
+                setConfigResult(event.target_node, event.configVersion);
+            }
         default:
+            ESP_LOGI(TAG, "Unknown bus event");
             break;
     }
 
     // TODO : отправка за оффлайн ноду
+}
+
+void updateConfig(uint8_t* data) {
+    uint16_t ver = updateBConfig(data);
+    uint8_t self_node[6];
+    getMac(self_node);
+    setConfigResult(self_node, ver);
 }
 
 static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
@@ -467,7 +492,7 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
                     case 'C': // config
                         //nodes_cfg_t *cfg = (nodes_cfg_t*)data+1;
                         //ESP_LOG_BUFFER_HEXDUMP("new cfg", data+1, len-1, CONFIG_LOG_DEFAULT_LEVEL);
-                        updateBConfig(data+1);                                                
+                        updateConfig(data+1);                                         
                         break;    
                     case 'E': // Common error   
                         ESP_LOGI(TAG, "Common error %d", data[1]);
@@ -532,5 +557,5 @@ void initCore() {
     //runWebServer();
     //xTaskCreate(TaskFunction_t pxTaskCode, const char *const pcName, const uint32_t usStackDepth, void *const pvParameters, UBaseType_t uxPriority, TaskHandle_t *const pxCreatedTask)
     xTaskCreate(&serviceTask, "serviceTask", 4096, NULL, 5, NULL);    
-    xTaskCreate(infoTask, "infoTask", 4096, NULL, 10, NULL);    
+    xTaskCreate(&infoTask, "infoTask", 4096, NULL, 10, NULL);        
 }

@@ -13,7 +13,8 @@ typedef enum {
     BEVT_ACTION = 1,
     BEVT_NEWNODE,
     BEVT_NODESTATUS,    
-    BEVT_IOEVENT
+    BEVT_IOEVENT,
+    BEVT_CFG_VER
 } bus_event_type_t;
 
 typedef struct __attribute__((packed)) {
@@ -25,6 +26,9 @@ typedef struct __attribute__((packed)) {
     uint16_t inputStates;
     uint16_t outputStates;
     io_action_t io_action;
+    uint16_t configVersion;
 } bus_event_t;
+// TODO : пересмотреть! inputStates повторяются трижды и внутри io_action_t/io_event_t и снаружи
+
 typedef void (*TBusEvent) (bus_event_t data);
 void registerBUSHandler(TBusEvent event);

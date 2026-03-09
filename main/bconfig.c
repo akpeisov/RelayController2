@@ -1,5 +1,6 @@
 #include "bconfig.h"
 #include <stdint.h>
+#include "esp_err.h"
 #include "esp_log.h"
 #include "storage.h"
 #include "utils.h"
@@ -420,7 +421,7 @@ size_t getConfigSize(io_cfg_t* cfg) {
 
 void saveBConfig(io_cfg_t* cfg) {
     if (saveFile(fileName, (uint8_t*)cfg, getConfigSize(cfg)) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to save config");     
+        ESP_LOGE(TAG, "Failed to save config");     
     }
 }
 
@@ -586,7 +587,7 @@ input_event_cfg_t *getConfigEvent(uint16_t offset) {
 const char *eventStr(event_type_t event) {
     switch (event) {
         case EVT_ON:        return "turned on";
-        case EVT_OFF:       return "truned off";
+        case EVT_OFF:       return "turned off";
         case EVT_TOGGLE:    return "toggled";
         case EVT_LONGPRESS: return "longpressed";
         default:            return "unknown event";
@@ -613,17 +614,17 @@ uint16_t getConfigSizeDbg() {
     return getConfigSize(gCfg);
 }
 
-void updateLocalConfig(const io_cfg_t *newCfg) {
+uint16_t updateLocalConfig(const io_cfg_t *newCfg) {
     if (!validateConfig(newCfg)) {
         ESP_LOGE(TAG, "updateLocalConfig. Invalid config");
-        return;
+        return 0;
     }
     uint16_t currentVersion = getConfigVersion();
     uint16_t newVersion = newCfg ? newCfg->version : 0;
     ESP_LOGI(TAG, "Current config version %d, new config version %d", currentVersion, newVersion);
     if (currentVersion == newVersion) {
         ESP_LOGI(TAG, "Config version is the same. No update needed.");
-        return;
+        return 0;
     }
     if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
         // backup old config
@@ -633,7 +634,7 @@ void updateLocalConfig(const io_cfg_t *newCfg) {
         if (!oldCfg) {
             ESP_LOGE(TAG, "Failed to allocate memory for config backup. Update aborted.");
             xSemaphoreGive(cfgMutex);
-            return;
+            return 0;
         }
         memcpy(oldCfg, gCfg, size);
         free(gCfg);
@@ -642,7 +643,7 @@ void updateLocalConfig(const io_cfg_t *newCfg) {
         gCfg = malloc(size);
         if (gCfg) {
             memcpy(gCfg, newCfg, size);
-            saveBConfig(gCfg);
+            saveBConfig(gCfg); // TODO :  STORAGE: Saving file path /storage/io_config.bin И виснет
             free(oldCfg);
             ESP_LOGI(TAG, "Local config updated successfully");
         } else {
@@ -652,11 +653,18 @@ void updateLocalConfig(const io_cfg_t *newCfg) {
         }
         xSemaphoreGive(cfgMutex);
     }
+    return newVersion;
 }
 
-void updateBConfig(uint8_t *ptr /*nodes_cfg_t *cfg*/) {    
+uint16_t updateBConfig(uint8_t *ptr /*nodes_cfg_t *cfg*/) {    
+    // esp_err_t res = ESP_OK;
+    uint16_t ver = 0; // пока такой колхоз...
     uint8_t nodes_count = *ptr;
     ptr += sizeof(uint8_t);  // nodes_count shift
+    if (nodes_count > 10) {
+        ESP_LOGE(TAG, "Updating binary config. Too many nodes %d", nodes_count);
+        return 0;
+    }
 
     ESP_LOGI(TAG, "Updating binary config. Nodes %d", nodes_count);    
     for (int i = 0; i < nodes_count; i++) {
@@ -670,7 +678,7 @@ void updateBConfig(uint8_t *ptr /*nodes_cfg_t *cfg*/) {
         //dumpIoConfig(&node->io_cfg);
         if (node_uid_equal(&node->uid, &self_node)) {    
             ESP_LOGI(TAG, "This config for local node. Updating IO config...");
-            updateLocalConfig(&node->io_cfg);            
+            ver = updateLocalConfig(&node->io_cfg);            
         } else {
             ESP_LOGI(TAG, "This config for another node. Sending it via bus...");
             sendFullConfig(node->uid.mac, (uint8_t*)&node->io_cfg, io_data_size);
@@ -678,6 +686,7 @@ void updateBConfig(uint8_t *ptr /*nodes_cfg_t *cfg*/) {
 
         ptr += node_size;    
     }
+    return ver;
 }
 
 bool isOldControllerType() {
