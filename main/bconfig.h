@@ -177,10 +177,11 @@ input_cfg_t *getConfigInput(uint8_t i);
 action_cfg_t *getConfigAction(uint16_t offset);
 input_event_cfg_t *getConfigEvent(uint16_t offset);
 uint16_t getConfigVersion();
+void setAllOff();
 
 void loadBConfig();
-uint16_t updateBConfig(uint8_t *ptr);
-uint16_t updateLocalConfig(const io_cfg_t *newCfg);
+void updateBConfig(uint8_t *ptr);
+esp_err_t updateLocalConfig(const io_cfg_t *newCfg);
 
 uint16_t getConfigSizeDbg();
 
@@ -213,10 +214,20 @@ typedef struct __attribute__((packed)) {
     neighbor_t neighbors[];
 } device_info_hdr_t;
 
-// static inline output_cfg_t* cfg_outputs(io_cfg_t *cfg);
-// static inline input_cfg_t* cfg_inputs(io_cfg_t *cfg);
-// static inline input_event_cfg_t* cfg_events(io_cfg_t *cfg);
-// static inline action_cfg_t* cfg_actions(io_cfg_t *cfg);
+typedef enum __attribute__((packed)) {
+    CFG_ERROR = 0,
+    CFG_OK,
+    CFG_SAME,
+} config_result_t;
+
+typedef struct __attribute__((packed)) {
+    uint16_t version;
+    node_uid_t node;
+    config_result_t result;
+} bconfig_event_t;
+
+typedef void (*TBCEvent) (bconfig_event_t data);
+void registerBHandler(TBCEvent event);
 
 #pragma once
 

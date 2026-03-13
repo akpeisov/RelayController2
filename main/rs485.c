@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/types.h>
+#include "esp_log_level.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
@@ -30,6 +31,10 @@
 #define MAXTASKNAME 22
 #define MAX_WAITING_TIME 1000//300
 #define BROADCAST_MAC "\xFF\xFF\xFF\xFF\xFF\xFF"
+
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
 
 static node_uid_t self_node;
 static uint16_t msg_counter = 0;
@@ -173,7 +178,7 @@ static void add_or_update_node(uint8_t *mac, model_t model,
         bus_event_t evt; 
         evt.event = BEVT_NEWNODE;       
         // TODO : states, model?
-        memcpy(evt.target_node, mac, 6);
+        memcpy(evt.node.mac, mac, 6);
         evt.online = online;
         evt.model = model;        
         evt.inputStates = inputStates;
@@ -190,7 +195,7 @@ static void update_node_status(uint8_t *mac, bool online) {
             // send event to core
             bus_event_t evt; 
             evt.event = BEVT_NODESTATUS;                   
-            memcpy(evt.target_node, mac, 6);
+            memcpy(evt.node.mac, mac, 6);
             evt.online = online;
             if (busevent) busevent(evt);
             return;
@@ -239,9 +244,14 @@ const char* msg_type_to_str(msg_type_t msg_type) {
         case MSG_CFG_START:  return "MSG_CFG_START";
         case MSG_CFG_END:    return "MSG_CFG_END";
         case MSG_CFG_NACK:   return "MSG_CFG_NACK";
+        case MSG_CFG_VER:    return "MSG_CFG_VER";
         case MSG_PING:       return "MSG_PING";        
         case MSG_STATUS:     return "MSG_STATUS";
-        default:             return "MSG_UNKNOWN";
+        default:             
+        //return "MSG_UNKNOWN";
+            static char unknown_buf[24]; 
+            snprintf(unknown_buf, sizeof(unknown_buf), "MSG_UNKNOWN(%d)", (int)msg_type);
+            return unknown_buf;
     }
 }
 
@@ -537,6 +547,7 @@ static void handle_frame(frame_t *f) {
     uint16_t inputStates = 0;
     bool isonline = false;
     model_t model = UNKNOWN;
+    static bus_event_t evt;
 
     switch (f->type) {
         case MSG_HELLO:
@@ -566,7 +577,7 @@ static void handle_frame(frame_t *f) {
             add_or_update_node(f->src, model, outputStates, inputStates, isonline); 
 
             // publish BEVT_IOEVENT
-            static bus_event_t evt;
+            
             evt.event = BEVT_IOEVENT;
             evt.io_event.io_type = f->payload[0];
             evt.io_event.io_id = f->payload[1];
@@ -644,39 +655,45 @@ static void handle_frame(frame_t *f) {
         }    
 
         case MSG_CFG_END: {
-            uint16_t crc = CRC16(rx.buffer, rx.total_size);
-
+            uint16_t crc = CRC16(rx.buffer, rx.total_size);            
+            esp_err_t res = ESP_FAIL;
             if (crc == rx.expected_crc) {
                 ESP_LOGI(TAG, "CFG OK");
                 //apply_config(rx.buffer);
                 io_cfg_t *newCfg = (io_cfg_t*)rx.buffer;
-                uint16_t ver = updateLocalConfig(newCfg);
-                rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);
-                uint8_t *payload = malloc(3);
-                if (payload) {
-                    payload[0] = ver & 0xFF; 
-                    payload[1] = (ver >> 8) & 0xFF;                    
-                    payload[2] = isonline;
-                    send_msg(f->src, MSG_CFG_VER, payload, 3);
-                }                
+                res = updateLocalConfig(newCfg);
+                rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);                                
             } else {
                 ESP_LOGE(TAG, "CFG CRC ERROR");
                 rs485_send(f->src, MSG_CFG_NACK, NULL, 0, f->msg_id);
+            }
+            uint8_t *payload = malloc(4);
+            if (payload) {
+                uint16_t ver = getConfigVersion();
+                payload[0] = ver & 0xFF; 
+                payload[1] = (ver >> 8) & 0xFF;                    
+                payload[2] = isonline; 
+                payload[3] = res == ESP_OK ? 1 : (res == ESP_FAIL ? 0 : 2);      
+                // send_msg(f->src, MSG_CFG_VER, payload, 4);  
+                rs485_send(f->src, MSG_CFG_VER, payload, 4, f->msg_id);       
             }
 
             if (rx.buffer) {
                 free(rx.buffer);
                 rx.buffer = NULL;
             }
-            rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);                
+            //rs485_send(f->src, MSG_ACK, NULL, 0, f->msg_id);                
             break;
         }
 
         case MSG_CFG_VER:            
             evt.event = BEVT_CFG_VER;
-            evt.configVersion = f->payload[0] | (f->payload[1] << 8);            
+            //evt.configVersion = f->payload[0] | (f->payload[1] << 8);    
+            evt.configResult.version = f->payload[0] | (f->payload[1] << 8);  
+            evt.configResult.result = f->payload[3]; 
             evt.online = f->payload[2];
-            memcpy(evt.target_node, f->src, 6);
+            memcpy(evt.configResult.node.mac, f->src, 6);
+            //memcpy(evt.node.mac, f->src, 6);
             if (busevent) busevent(evt);              
             break;
 
@@ -740,7 +757,8 @@ void sendNodeAction(action_cfg_t *act) {
     msg->msg_id = next_msg_id();
     msg->payload = payload;
     msg->payload_len = 2;    
-    msg->require_ack = true;
+    if (memcmp(msg->dst, BROADCAST_MAC, 6) != 0)
+        msg->require_ack = true;
     //msg->waiting_task = xTaskGetCurrentTaskHandle();
     
     addQueue(msg);
@@ -765,18 +783,6 @@ void sendNodeEvent(node_io_event_t event, uint16_t inputStates, uint16_t outputS
         payload->online        = node_online ? 1 : 0;
         payload->model         = controllerType;
     }
-        
-    // size_t payload_size = 9; // io_type(1) + io_id(1) + state(1) + outputStates(2) + inputStates(2) + online(1) + model(1)
-    // uint8_t *payload = malloc(payload_size);
-    // payload[0] = event.io_type;
-    // payload[1] = event.io_id;
-    // payload[2] = event.state;
-    // payload[3] = outputStates & 0xFF;
-    // payload[4] = (outputStates >> 8) & 0xFF;
-    // payload[5] = inputStates & 0xFF;
-    // payload[6] = (inputStates >> 8) & 0xFF;
-    // payload[7] = node_online ? 1 : 0;
-    // payload[8] = controllerType;
 
     memcpy(msg->dst, BROADCAST_MAC, 6);
     msg->type = MSG_EVENT;
@@ -809,26 +815,72 @@ void sendNodeStatus(bool online) {
     addQueue(msg);
 }
 
-void sendFullConfig(uint8_t *dst, uint8_t *cfg, uint32_t size) {
+// Простая синхронная отправка с ожиданием ACK - минуя очередь
+static bool send_and_wait_ack(uint8_t *dst, msg_type_t type, 
+                               void *payload, uint16_t len, uint32_t timeout_ms) {
+    uint16_t msg_id = next_msg_id();
+    bool ok = false;
+    
+    // Регистрируем pending до отправки
+    xSemaphoreTake(pending_mux, portMAX_DELAY);
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (pending[i].task == NULL) {
+            pending[i].msg_id = msg_id;
+            pending[i].task = xTaskGetCurrentTaskHandle();
+            break;
+        }
+    }
+    xSemaphoreGive(pending_mux);
+
+    // Сбрасываем старые уведомления
+    xTaskNotifyStateClear(NULL);
+    
+    // Берём доступ к шине и отправляем напрямую
+    if (xSemaphoreTake(bus_access_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        goto cleanup;
+    }
+    wait_for_bus_idle(200);
+    rs485_send(dst, type, payload, len, msg_id);
+    bus_busy = false;
+    xSemaphoreGive(bus_access_sem);
+
+    // Ждём ACK
+    uint32_t notified = 0;
+    ok = xTaskNotifyWait(0, UINT32_MAX, &notified, 
+                               pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+    if (!ok) {
+        ESP_LOGW(TAG, "ACK timeout for msg_id %d type %s", msg_id, msg_type_to_str(type));
+    }
+    
+cleanup:
+    xSemaphoreTake(pending_mux, portMAX_DELAY);
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (pending[i].task == xTaskGetCurrentTaskHandle()) {
+            pending[i].task = NULL;
+            pending[i].msg_id = 0;
+        }
+    }
+    xSemaphoreGive(pending_mux);
+    return ok;
+}
+
+void sendNodeConfig(uint8_t *dst, uint8_t *cfg, uint32_t size) {
     uint16_t chunk_size = 128;
     uint16_t crc = CRC16(cfg, size);
+    int retries = 3;
 
-    cfg_start_t start = {
-        .total_size = size,
-        .crc16 = crc,
-        .chunk_size = chunk_size,
-    };
-
-    ESP_LOGI(TAG, "CFG_START sending...");
-    if (!send_msg_sync(dst, MSG_CFG_START, &start, sizeof(start), 2000)) {
-        ESP_LOGE(TAG, "CFG_START: no ACK, aborting");
-        return;
+    // CFG_START
+    cfg_start_t start = { .total_size = size, .crc16 = crc, .chunk_size = chunk_size };
+    bool ok = false;
+    for (int r = 0; r < retries && !ok; r++) {
+        ok = send_and_wait_ack(dst, MSG_CFG_START, &start, sizeof(start), 2000);
     }
-    ESP_LOGI(TAG, "CFG_START ACK OK");
+    if (!ok) { ESP_LOGE(TAG, "CFG_START failed"); return; }
 
+    // Chunks
     uint16_t seq = 0;
     for (uint32_t offset = 0; offset < size; offset += chunk_size) {
-        uint16_t len = (chunk_size < size - offset) ? chunk_size : (uint16_t)(size - offset);
+        uint16_t len = MIN(chunk_size, (uint16_t)(size - offset));
 
         uint8_t buf[sizeof(cfg_chunk_t) + 128];
         cfg_chunk_t *c = (cfg_chunk_t *)buf;
@@ -836,58 +888,25 @@ void sendFullConfig(uint8_t *dst, uint8_t *cfg, uint32_t size) {
         c->len = len;
         memcpy(c->data, cfg + offset, len);
 
-        ESP_LOGI(TAG, "CFG_CHUNK seq %d sending...", seq);
-        if (!send_msg_sync(dst, MSG_CFG_CHUNK, buf, sizeof(cfg_chunk_t) + len, 2000)) {
-            ESP_LOGE(TAG, "CFG_CHUNK seq %d: no ACK, aborting", seq);
-            return;
+        ok = false;
+        for (int r = 0; r < retries && !ok; r++) {
+            ok = send_and_wait_ack(dst, MSG_CFG_CHUNK, buf, 
+                                    sizeof(cfg_chunk_t) + len, 2000);
         }
+        if (!ok) { ESP_LOGE(TAG, "CFG_CHUNK seq %d failed", seq); return; }
         seq++;
     }
 
+    // CFG_END
     cfg_end_t end = { .last_seq = seq - 1 };
-    ESP_LOGI(TAG, "CFG_END sending...");
-    if (!send_msg_sync(dst, MSG_CFG_END, &end, sizeof(end), 3000)) {
-        ESP_LOGE(TAG, "CFG_END: no ACK");
-        // конфиг мог примениться — логируем но не считаем фатальным
+    ok = false;
+    for (int r = 0; r < retries && !ok; r++) {
+        ok = send_and_wait_ack(dst, MSG_CFG_END, &end, sizeof(end), 3000);
     }
+    if (!ok) ESP_LOGW(TAG, "CFG_END no ACK (config may have applied)");
+    
     ESP_LOGI(TAG, "Config transfer complete");
 }
-/*
-void sendFullConfigOld(uint8_t *dst, uint8_t *cfg, uint32_t size) {
-    uint16_t chunk_size = 128;
-    uint16_t crc = CRC16(cfg, size);
-
-    cfg_start_t start = {
-        .total_size = size,
-        .crc16 = crc,
-        .chunk_size = chunk_size,        
-    };
-
-    send_msg(dst, MSG_CFG_START, &start, sizeof(start));
-
-    // wait for ack
-
-    uint16_t seq = 0;
-    for (uint32_t offset = 0; offset < size; offset += chunk_size) {
-        //uint16_t len = MIN(chunk_size, size - offset);
-        uint16_t len = chunk_size;
-        if (len > size - offset)
-            len = size - offset;
-
-        uint8_t buf[sizeof(cfg_chunk_t) + 128];
-        cfg_chunk_t *c = (cfg_chunk_t *)buf;
-
-        c->seq = seq++;
-        c->len = len;
-        memcpy(c->data, cfg + offset, len);
-
-        send_msg(dst, MSG_CFG_CHUNK, buf, sizeof(cfg_chunk_t) + len);
-    }
-
-    cfg_end_t end = {.last_seq = seq - 1};
-    send_msg(dst, MSG_CFG_END, &end, sizeof(end));
-}
-    */
 
 static void discoveryTask(void *arg) {
     ESP_LOGI(TAG, "Starting RS485 discovery task...");

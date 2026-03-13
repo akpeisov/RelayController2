@@ -7,7 +7,7 @@ void rs485sendEvent();
 void sendNodeAction(action_cfg_t *act);
 void sendNodeStatus(bool online);
 void sendNodeEvent(node_io_event_t event, uint16_t inputStates, uint16_t outputStates);
-void sendFullConfig(uint8_t *dst, uint8_t *cfg, uint32_t size);
+void sendNodeConfig(uint8_t *dst, uint8_t *cfg, uint32_t size);
 
 typedef enum {
     BEVT_ACTION = 1,
@@ -19,14 +19,17 @@ typedef enum {
 
 typedef struct __attribute__((packed)) {
     bus_event_type_t event;
-    uint8_t target_node[6];
+    //uint8_t target_node[6];
+    node_uid_t node;
     bool online;
     model_t model;
     io_event_t io_event;
     uint16_t inputStates;
     uint16_t outputStates;
     io_action_t io_action;
-    uint16_t configVersion;
+    // uint16_t configVersion;
+    // config_result_t configResult;
+    bconfig_event_t configResult;
 } bus_event_t;
 // TODO : пересмотреть! inputStates повторяются трижды и внутри io_action_t/io_event_t и снаружи
 

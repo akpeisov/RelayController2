@@ -43,51 +43,6 @@ void sendNewNode(uint8_t *mac, model_t model, uint16_t outputStates, uint16_t in
     WSSendPacket(buffer, 12);
 }
 
-/*
-void sendInfo() {
-    if (!wsConnected) {
-        return;
-    }
-
-    uint8_t buffer[256];
-    buffer[0] = 'I'; // info packet
-    uint8_t *p = buffer + 1;
-    
-    device_info_hdr_t hdr = {0};
-    getMac(hdr.mac);    
-    hdr.freeMemory = esp_get_free_heap_size();
-    hdr.uptimeRaw = getUpTimeRaw();
-    hdr.version = getConfigVersion();
-    hdr.curdate = time(NULL); 
-    hdr.wifiRSSI = getRSSI();
-    hdr.ethIP = ethIp;
-    hdr.wifiIP = wifiIp;
-    strncpy(hdr.resetReason, espResetReason(), sizeof(hdr.resetReason));    
-    hdr.outputStates = getOutputs();
-    hdr.inputStates = getInputs();
-
-    node_t *nodes;    
-    hdr.neighborCount = getNodes(&nodes);
-
-    memcpy(p, &hdr, sizeof(hdr));
-    p += sizeof(hdr);
-ESP_LOGI(TAG, "info. neighbor count %d", hdr.neighborCount);
-    for (int i = 0; i < hdr.neighborCount; i++) {
-        neighbor_t n;
-        memcpy(n.mac, nodes[i].mac, 6);
-        n.model = nodes[i].model;
-        n.outputStates = nodes[i].outputStates;
-        n.inputStates = nodes[i].inputStates;
-        n.online = nodes[i].online;
-        memcpy(p, &n, sizeof(n));
-        p += sizeof(n);
-    }
-    size_t packetSize = p - buffer;
-    
-    WSSendPacket(buffer, packetSize);
-}
-    */
-
 void sendInfo() {
     if (!wsConnected) return;
 
@@ -149,6 +104,24 @@ void sendInfo() {
     WSSendPacket(buffer, packetSize);
 }
 
+void sendConfig() {
+    cJSON *config = getConfigJSON();
+    if (config == NULL) {
+        ESP_LOGE(TAG, "No config");
+        return;
+    }
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "CONFIG");
+    cJSON_AddItemReferenceToObject(msg, "payload", config);
+    //cJSON_AddItemToObject(msg, "payload", config);
+    char *message = cJSON_PrintUnformatted(msg);
+    if (message != NULL) {      
+        WSSendTextPacket(message, strlen(message));
+        free(message);
+    }
+
+    cJSON_Delete(msg);    
+}
 
 char *loadJwtCert() {
     char *jwt_key = NULL;
@@ -264,7 +237,8 @@ esp_err_t uiRouter(httpd_req_t *req) {
                     xSemaphoreGive(gMutex);
                 }
             }
-        }            
+        }          
+        // TODO : OTA service with external URL  
     } else if (!strcmp(uri, "/service/testled")) {
         if (req->method == HTTP_POST) {
             err = getContent(&content, req);
@@ -346,33 +320,6 @@ void sendEvent(io_event_t event) {
     }
 }
 
-// void sendEvent(uint8_t* mac, uint8_t io_type, uint8_t io_id, bool state, uint16_t timer, uint16_t outputStates, uint16_t inputStates) {
-//     // AA 0E NODE TT ID SS TMR ISlow IShi OSlow OShi
-//     // TT type SS state TMR of output        
-//     uint8_t buflen = 16;
-//     uint8_t buffer[buflen];    
-//     buffer[0] = 'E'; // event
-//     memcpy(buffer+1, mac, 6);
-//     buffer[7] = io_type;
-//     buffer[8] = io_id;    
-//     buffer[9] = state;
-//     buffer[10] = outputStates & 0xFF; 
-//     buffer[11] = (outputStates >> 8) & 0xFF; 
-//     buffer[12] = inputStates & 0xFF;
-//     buffer[13] = (inputStates >> 8) & 0xFF; 
-//     // TODO: io states, timer optional if io_type is output
-//     if (io_type == 0) { 
-//         buffer[14] = timer >> 8;
-//         buffer[15] = timer & 0xFF;
-//     } else {
-//         buflen = 14;
-//     }
-
-//     ESP_LOG_BUFFER_HEXDUMP(TAG, buffer, buflen, CONFIG_LOG_DEFAULT_LEVEL);
-
-//     WSSendPacket(buffer, buflen);
-// }
-
 void serviceTask(void *pvParameter) {
     ESP_LOGI(TAG, "Creating service task");
     while(1) {   
@@ -397,14 +344,15 @@ void IOhandler(io_event_t event) {
     sendEvent(event);    
 }
 
-void setConfigResult(uint8_t *mac, uint16_t version) {
-    size_t total_len = 9;
+void setConfigResult(node_uid_t node, uint16_t version, config_result_t res) {
+    size_t total_len = 10;
     uint8_t *packet = malloc(total_len);
     if (packet) {
         packet[0] = 'C';        
-        memcpy(packet+1, mac, sizeof(node_uid_t));
+        memcpy(packet+1, node.mac, sizeof(node_uid_t));
         packet[7] = version & 0xFF;
         packet[8] = (version >> 8) & 0xFF;
+        packet[9] = res;
         WSSendPacket((uint8_t*)packet, total_len);        
         free(packet);
     }
@@ -418,7 +366,7 @@ void BusHandler(bus_event_t event) {
     // Принять пакет, сделать действие, получить актуальное состояние выхода и отправить его на сервер. Или лучше отдельно отслеживать изменение состояний изменения IO и отправлять на сервер...
     switch (event.event) {
         case BEVT_NEWNODE:
-            sendNewNode(event.target_node, event.model, event.outputStates, event.inputStates);
+            sendNewNode(event.node.mac, event.model, event.outputStates, event.inputStates);
             break;        
         case BEVT_NODESTATUS:            
             break;
@@ -442,7 +390,7 @@ void BusHandler(bus_event_t event) {
             break;
         case BEVT_CFG_VER:
             if (!event.online) {
-                setConfigResult(event.target_node, event.configVersion);
+                setConfigResult(event.configResult.node, event.configResult.version, event.configResult.result);
             }
         default:
             ESP_LOGI(TAG, "Unknown bus event");
@@ -452,11 +400,9 @@ void BusHandler(bus_event_t event) {
     // TODO : отправка за оффлайн ноду
 }
 
-void updateConfig(uint8_t* data) {
-    uint16_t ver = updateBConfig(data);
-    uint8_t self_node[6];
-    getMac(self_node);
-    setConfigResult(self_node, ver);
+void bHandler(bconfig_event_t event) {
+    // callback from bconfig
+    setConfigResult(event.node, event.version, event.result);
 }
 
 static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
@@ -492,7 +438,8 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
                     case 'C': // config
                         //nodes_cfg_t *cfg = (nodes_cfg_t*)data+1;
                         //ESP_LOG_BUFFER_HEXDUMP("new cfg", data+1, len-1, CONFIG_LOG_DEFAULT_LEVEL);
-                        updateConfig(data+1);                                         
+                        //updateConfig(data+1);    
+                        updateBConfig(data+1);                                     
                         break;    
                     case 'E': // Common error   
                         ESP_LOGI(TAG, "Common error %d", data[1]);
@@ -527,9 +474,13 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
                             case 'I':
                                 ESP_LOGI(TAG, "Info command");
                                 sendInfo();
-                                break;    
+                                break;
+                            case 'C':
+                                ESP_LOGI(TAG, "Config requested");
+                                sendConfig();
+                                break;
                             default:
-                                ESP_LOGE(TAG, "Unknown command");
+                                ESP_LOGE(TAG, "Unknown command %s", data[1]);
                                 break;
                         }
                         break;    
@@ -554,6 +505,7 @@ void initCore() {
     // register handler 
     registerIOHandler(&IOhandler);
     registerBUSHandler(&BusHandler);
+    registerBHandler(&bHandler);
     //runWebServer();
     //xTaskCreate(TaskFunction_t pxTaskCode, const char *const pcName, const uint32_t usStackDepth, void *const pvParameters, UBaseType_t uxPriority, TaskHandle_t *const pxCreatedTask)
     xTaskCreate(&serviceTask, "serviceTask", 4096, NULL, 5, NULL);    

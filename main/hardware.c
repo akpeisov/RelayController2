@@ -208,10 +208,10 @@ bool isInArray(uint8_t *array, uint8_t arraySize, uint8_t element) {
 esp_err_t initPCA9685hw(i2c_dev_t dev, bool setValues) {
     esp_err_t err = ESP_FAIL;
     uint16_t freq = MAXFREQ;
-    uint16_t nFreq = getConfigValueInt("hw/freq");    
+    uint16_t nFreq = getConfigValueNumber("hw/freq");    
     if (nFreq > 0) //  TODO : && nFreq < MAXFREQ
         freq = nFreq;
-    uint16_t nRelPWM = getConfigValueInt("hw/pwm");    
+    uint16_t nRelPWM = getConfigValueNumber("hw/pwm");    
     if (nRelPWM > 0) {
         relPWM = nRelPWM;
     }
@@ -437,6 +437,8 @@ esp_err_t initI2Cdevices(model_t *ctrlType) {
     0x41 - 9685 (face)  
     0x42 - 9685 (face)   
 
+    0x25 - pca9555 (face1)
+    0x26 - pca9555 (face2)
     ---
     0x18 - i2c-ow DS2484
 	*/
@@ -806,8 +808,26 @@ uint16_t getInputs() {
 }
 
 void setOutput(action_cfg_t *act) {
-    ESP_LOGI(TAG, "setOutput action %d output %d node %s", act->action, act->output_id, strNode(&act->target_node));
+    ESP_LOGI(TAG, "setOutput action %d output %d node %s", 
+        act->action, act->output_id, strNode(&act->target_node));
     
+    if (act->action == ACT_ALLOFF) {
+        setAllOff();  
+        // TODO : inform backend about alloff
+        io_event_t e;
+        e.io_type = IO_OUT;
+        //e.io_id = act->output_id; // ?????
+        e.state = false;
+        e.timer = 0;
+        e.node = act->target_node;        
+        e.outputsStates = getOutputs();
+        e.inputStates = getInputs();
+        if (ioevent) ioevent(e);
+        sendNodeAction(act);    
+        return;
+    }
+
+
     if (isLocalNode(&act->target_node)) {        
         output_cfg_t *output = findOutput(act->output_id);
         if (output == NULL) {
@@ -825,7 +845,8 @@ void setOutput(action_cfg_t *act) {
                 output->is_on = !output->is_on;
                 break;
             case ACT_ALLOFF:
-                // TODO : realize it
+                // TODO : realize it    
+                     
                 break;
             default:
                 break;            

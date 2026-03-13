@@ -10,6 +10,7 @@ static const char *TAG = "BCONFIG";
 io_cfg_t *gCfg;
 node_uid_t self_node;
 SemaphoreHandle_t cfgMutex;
+static TBCEvent bcevent = NULL;
 
 const controller_data_t controllerTypesData[] = {
     {"UNKNOWN", 0, 0, 0},    
@@ -21,135 +22,6 @@ const controller_data_t controllerTypesData[] = {
 };
 
 const char* fileName = "io_config.bin";
-
-// io_cfg_t* makeDefaultConfig() {
-//     if (controllerType == UNKNOWN)
-//         return NULL;
-//     const controller_data_t *ctl = &controllerTypesData[controllerType];
-
-//     uint8_t outputs_cnt = ctl->outputs;
-//     uint8_t btn_cnt     = ctl->buttons;
-//     uint8_t inputs_cnt  = ctl->inputs;
-
-//     uint16_t events_cnt =
-//         btn_cnt +          // BTN: toggle
-//         inputs_cnt * 2;        // SWITCH: on + off
-    
-//     uint16_t actions_cnt =
-//         btn_cnt * 1 +          // toggle
-//         //btn_cnt * 1 +          // longpress (WAIT)
-//         inputs_cnt * 2;        // on + off
-//     actions_cnt++; //for test    
-
-//     io_cfg_t *cfg = calloc(1, sizeof(io_cfg_t));
-//     if (!cfg) return NULL;
-//     cfg->version = 1;
-
-//     cfg->outputs = calloc(outputs_cnt, sizeof(output_cfg_t));
-//     cfg->inputs  = calloc(btn_cnt + inputs_cnt, sizeof(input_cfg_t));
-//     cfg->events  = calloc(events_cnt, sizeof(input_event_cfg_t));
-//     cfg->actions = calloc(actions_cnt, sizeof(action_cfg_t));
-
-//     cfg->outputs_count = outputs_cnt;
-//     cfg->inputs_count  = btn_cnt + inputs_cnt;
-//     cfg->events_count  = events_cnt;
-//     cfg->actions_count = actions_cnt;
-
-//     uint16_t ev_idx = 0;
-//     uint16_t act_idx = 0;
-//     uint8_t input_idx = 0;
-
-//     // OUTPUTS
-//     for (uint8_t i = 0; i < outputs_cnt; i++) {
-//         cfg->outputs[i] = (output_cfg_t) {
-//             .id = i,
-//             .type = OUTPUT_SIMPLE,
-//             .is_on = false,
-//             .simple.limit_sec = 0
-//         };
-//     }
-
-//     // SERVICE BUTTONS
-//     for (uint8_t i = 0; i < btn_cnt; i++, input_idx++) {
-//         input_cfg_t *in = &cfg->inputs[input_idx];
-//         in->id = i + 16;
-//         in->type = INPUT_BTN;
-//         in->events_count = 1;
-//         in->events_offset = ev_idx;
-
-//         if (i!=3) {
-//             // EVT_TOGGLE
-//             cfg->events[ev_idx++] = (input_event_cfg_t){
-//                 .event = EVT_TOGGLE,
-//                 .actions_count = 1,
-//                 .actions_offset = act_idx
-//             };
-//             cfg->actions[act_idx++] = (action_cfg_t){
-//                 .target_node = self_node,
-//                 .output_id = i,
-//                 .action = ACT_TOGGLE
-//             };  
-//         } else {
-//             // test action 
-//             cfg->events[ev_idx++] = (input_event_cfg_t){
-//                 .event = EVT_TOGGLE,
-//                 .actions_count = 2,
-//                 .actions_offset = act_idx
-//             };
-//             cfg->actions[act_idx++] = (action_cfg_t){
-//                 .target_node = self_node,
-//                 .output_id = 3,
-//                 .action = ACT_TOGGLE
-//             };  
-//             cfg->actions[act_idx++] = (action_cfg_t){
-//                 .target_node = ((node_uid_t){ .mac = {0xc8, 0xc9, 0xa3, 0xf9, 0xb6, 0xc8} }),
-//                 .output_id = 0,
-//                 .action = ACT_TOGGLE
-//             };  
-//         }       
-        
-//     }
-
-//     // EXTERNAL INPUTS
-//     for (uint8_t i = 0; i < inputs_cnt; i++, input_idx++) {
-//         uint8_t out = i < outputs_cnt ? i : outputs_cnt - 1;
-
-//         input_cfg_t *in = &cfg->inputs[input_idx];
-//         in->id = i;
-//         in->type = INPUT_SWITCH;
-//         in->events_count = 2;
-//         in->events_offset = ev_idx;
-
-//         // EVT_ON
-//         cfg->events[ev_idx++] = (input_event_cfg_t){
-//             .event = EVT_ON,
-//             .actions_count = 1,
-//             .actions_offset = act_idx
-//         };
-//         cfg->actions[act_idx++] = (action_cfg_t){
-//             .target_node = self_node,
-//             .output_id = out,
-//             .action = ACT_ON
-//         };
-
-//         // EVT_OFF
-//         cfg->events[ev_idx++] = (input_event_cfg_t){
-//             .event = EVT_OFF,
-//             .actions_count = 1,
-//             .actions_offset = act_idx
-//         };
-//         cfg->actions[act_idx++] = (action_cfg_t){
-//             .target_node = self_node,
-//             .output_id = out,
-//             .action = ACT_OFF
-//         };
-//     }
-
-//     return cfg;
-// }
-
-
-
 
 io_cfg_t* makeDefaultConfig(void) {
     if (controllerType == UNKNOWN)
@@ -292,6 +164,7 @@ static const char* actionToStr(action_type_t a) {
         case ACT_OFF:     return "OFF";
         case ACT_TOGGLE:  return "TOGGLE";
         case ACT_WAIT:    return "WAIT";
+        case ACT_ALLOFF:  return "ALLOFF";
         default:          return "UNKNOWN";
     }
 }
@@ -410,7 +283,6 @@ if (!validateConfig(cfg)) {
     printf("================================\n");
 }
 
-
 size_t getConfigSize(io_cfg_t* cfg) {
     return sizeof(io_cfg_t)
                      + cfg->outputs_count * sizeof(output_cfg_t)
@@ -419,10 +291,8 @@ size_t getConfigSize(io_cfg_t* cfg) {
                      + cfg->actions_count * sizeof(action_cfg_t);
 }
 
-void saveBConfig(io_cfg_t* cfg) {
-    if (saveFile(fileName, (uint8_t*)cfg, getConfigSize(cfg)) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to save config");     
-    }
+esp_err_t saveBConfig(io_cfg_t* cfg) {
+    return saveFile(fileName, (uint8_t*)cfg, getConfigSize(cfg));
 }
 
 void loadBConfig() {    
@@ -614,17 +484,17 @@ uint16_t getConfigSizeDbg() {
     return getConfigSize(gCfg);
 }
 
-uint16_t updateLocalConfig(const io_cfg_t *newCfg) {
+esp_err_t updateLocalConfig(const io_cfg_t *newCfg) {
     if (!validateConfig(newCfg)) {
         ESP_LOGE(TAG, "updateLocalConfig. Invalid config");
-        return 0;
+        return ESP_FAIL;
     }
     uint16_t currentVersion = getConfigVersion();
     uint16_t newVersion = newCfg ? newCfg->version : 0;
     ESP_LOGI(TAG, "Current config version %d, new config version %d", currentVersion, newVersion);
     if (currentVersion == newVersion) {
         ESP_LOGI(TAG, "Config version is the same. No update needed.");
-        return 0;
+        return ESP_ERR_INVALID_VERSION;
     }
     if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
         // backup old config
@@ -634,7 +504,7 @@ uint16_t updateLocalConfig(const io_cfg_t *newCfg) {
         if (!oldCfg) {
             ESP_LOGE(TAG, "Failed to allocate memory for config backup. Update aborted.");
             xSemaphoreGive(cfgMutex);
-            return 0;
+            return ESP_FAIL;
         }
         memcpy(oldCfg, gCfg, size);
         free(gCfg);
@@ -643,9 +513,12 @@ uint16_t updateLocalConfig(const io_cfg_t *newCfg) {
         gCfg = malloc(size);
         if (gCfg) {
             memcpy(gCfg, newCfg, size);
-            saveBConfig(gCfg); // TODO :  STORAGE: Saving file path /storage/io_config.bin И виснет
-            free(oldCfg);
-            ESP_LOGI(TAG, "Local config updated successfully");
+            if (saveBConfig(gCfg) == ESP_OK) { // TODO :  STORAGE: Saving file path /storage/io_config.bin И виснет
+                ESP_LOGI(TAG, "Local config updated successfully");
+            } else {
+                ESP_LOGE(TAG, "Error while saving local config");
+            }
+            free(oldCfg);            
         } else {
             ESP_LOGE(TAG, "Failed to allocate memory for new config");
             // restore old config
@@ -653,17 +526,16 @@ uint16_t updateLocalConfig(const io_cfg_t *newCfg) {
         }
         xSemaphoreGive(cfgMutex);
     }
-    return newVersion;
+    return ESP_OK;
 }
 
-uint16_t updateBConfig(uint8_t *ptr /*nodes_cfg_t *cfg*/) {    
+void updateBConfig(uint8_t *ptr /*nodes_cfg_t *cfg*/) {    
     // esp_err_t res = ESP_OK;
-    uint16_t ver = 0; // пока такой колхоз...
     uint8_t nodes_count = *ptr;
     ptr += sizeof(uint8_t);  // nodes_count shift
     if (nodes_count > 10) {
         ESP_LOGE(TAG, "Updating binary config. Too many nodes %d", nodes_count);
-        return 0;
+        return;
     }
 
     ESP_LOGI(TAG, "Updating binary config. Nodes %d", nodes_count);    
@@ -678,15 +550,24 @@ uint16_t updateBConfig(uint8_t *ptr /*nodes_cfg_t *cfg*/) {
         //dumpIoConfig(&node->io_cfg);
         if (node_uid_equal(&node->uid, &self_node)) {    
             ESP_LOGI(TAG, "This config for local node. Updating IO config...");
-            ver = updateLocalConfig(&node->io_cfg);            
+            esp_err_t res = updateLocalConfig(&node->io_cfg); 
+            bconfig_event_t evt;
+            evt.node = self_node;
+            evt.version = getConfigVersion();
+            if (res == ESP_ERR_INVALID_VERSION)
+                evt.result = 2;
+            else if (res == ESP_OK)
+                evt.result = 1;
+            else
+                evt.result = 0;
+            bcevent(evt);           
         } else {
-            ESP_LOGI(TAG, "This config for another node. Sending it via bus...");
-            sendFullConfig(node->uid.mac, (uint8_t*)&node->io_cfg, io_data_size);
+            ESP_LOGI(TAG, "This config for another node. Sending it via bus... Version %d", node->io_cfg.version);            
+            sendNodeConfig(node->uid.mac, (uint8_t*)&node->io_cfg, io_data_size);
         }
-
         ptr += node_size;    
     }
-    return ver;
+    ESP_LOGI(TAG, "End of update bconfig");
 }
 
 bool isOldControllerType() {
@@ -696,4 +577,25 @@ bool isOldControllerType() {
 void testConfig() {
     //dumpIoConfig(gCfg);
     ESP_LOG_BUFFER_HEXDUMP("cfg", (const uint8_t*)gCfg, getConfigSize(gCfg), CONFIG_LOG_DEFAULT_LEVEL);  
+}
+
+void registerBHandler(TBCEvent event) {
+    bcevent = event;
+}
+
+void setAllOff() {
+    ESP_LOGI(TAG, "Setting all outputs to off");
+    if (!gCfg) {
+        ESP_LOGE(TAG, "IO config not initialized");
+        return;
+    }
+
+    if (xSemaphoreTake(cfgMutex, portMAX_DELAY) == pdTRUE) {
+        const io_cfg_t *cfg = gCfg;  
+        output_cfg_t *outputs = cfg_outputs(cfg);  
+        for (uint8_t i = 0; i < cfg->outputs_count; i++) {
+            outputs[i].is_on = false;
+        }        
+        xSemaphoreGive(cfgMutex);
+    }
 }
