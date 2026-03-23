@@ -15,3 +15,5 @@ void startIOTask();
 void setOutput(action_cfg_t *act);
 uint16_t getOutputs();
 uint16_t getInputs();
+void processInputEvent(event_type_t event, uint8_t inputId);
+bool isLocalNode(const node_uid_t *b);

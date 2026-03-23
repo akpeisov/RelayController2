@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Config editor. Beta</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #f5f6fa;
+    padding: 20px;
+  }
+
+  .container {
+    max-width: 900px;
+    margin: auto;
+  }
+
+  .node {
+    margin-left: 20px;
+    padding-left: 10px;
+    border-left: 2px solid #ccc;
+    margin-bottom: 8px;
+  }
+
+  .key {
+    font-weight: bold;
+    margin-right: 6px;
+  }
+
+  input, textarea {
+    padding: 4px;
+    margin: 2px 0;
+    width: 300px;
+  }
+
+  .array-index {
+    color: #888;
+  }
+
+  button {
+    margin-top: 20px;
+    padding: 10px 20px;
+    background: #2e86de;
+    color: white;
+    border: none;
+    cursor: pointer;
+    border-radius: 5px;
+  }
+
+  button:hover {
+    background: #1b4f72;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h2>Config editor. Beta</h2>
+  <div id="editor"></div>
+  <button onclick="saveJSON()">Save</button>
+</div>
+
+<script>
+const GET_URL = "/service/config";
+const POST_URL = "/service/config";  // <-- сюда путь для сохранения
+
+let originalData = {};
+
+function renderNode(key, value, path = []) {
+  const container = document.createElement("div");
+  container.className = "node";
+
+  const currentPath = [...path, key];
+
+  if (typeof value === "object" && value !== null) {
+    const title = document.createElement("div");
+    title.innerHTML = `<span class="key">${key}</span>:`;
+    container.appendChild(title);
+
+    for (let k in value) {
+      container.appendChild(renderNode(k, value[k], currentPath));
+    }
+  } else {
+    const label = document.createElement("span");
+    label.className = "key";
+    label.textContent = key + ": ";
+
+    const input = document.createElement("input");
+    input.value = value;
+    input.dataset.path = JSON.stringify(currentPath);
+
+    container.appendChild(label);
+    container.appendChild(input);
+  }
+
+  return container;
+}
+
+function setValue(obj, path, value) {
+  let temp = obj;
+
+  for (let i = 0; i < path.length - 1; i++) {
+    let key = path[i];
+    if (!isNaN(key)) key = Number(key);
+
+    if (temp[key] === undefined) {
+      console.error("Wrong path:", path);
+      return;
+    }
+
+    temp = temp[key];
+  }
+
+  let lastKey = path[path.length - 1];
+  if (!isNaN(lastKey)) lastKey = Number(lastKey);
+
+  if (!isNaN(value) && value.trim() !== "") value = Number(value);
+  else if (value === "true") value = true;
+  else if (value === "false") value = false;
+
+  temp[lastKey] = value;
+}
+
+function collectData() {
+  const inputs = document.querySelectorAll("input");
+  let newData = JSON.parse(JSON.stringify(originalData));
+
+  inputs.forEach(input => {
+    const path = JSON.parse(input.dataset.path);
+    setValue(newData, path, input.value);
+  });
+
+  return newData;
+}
+
+async function loadJSON() {
+  const res = await fetch(GET_URL);
+  const data = await res.json();
+
+  originalData = data;
+
+  const editor = document.getElementById("editor");
+  editor.innerHTML = "";
+
+  for (let key in data) {
+    editor.appendChild(renderNode(key, data[key], []));
+  }
+}
+
+async function saveJSON() {
+  const newData = collectData();
+
+  await fetch(POST_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(newData)
+  });
+
+  alert("Saved!");
+}
+
+loadJSON();
+</script>
+
+</body>
+</html>

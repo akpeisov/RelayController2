@@ -777,8 +777,8 @@ char* getControllerTypeText(uint8_t type) {
 uint16_t getOutputs() {
     uint16_t outputs = 0;    
     uint8_t outputsCount = getConfigOutputsCount();
-    if (outputsCount > 4)
-        ESP_LOGW(TAG, "Too many outputs in config %d, max is 4", outputsCount);
+    if (outputsCount > 16)
+        ESP_LOGW(TAG, "Too many outputs in config %d, max is 16", outputsCount);
     //outputsCount &= 0x10;
     for (uint8_t i = 0; i < outputsCount; i++) {
         //const output_cfg_t *o = &gCfg->outputs[i];
@@ -816,17 +816,18 @@ void setOutput(action_cfg_t *act) {
         // TODO : inform backend about alloff
         io_event_t e;
         e.io_type = IO_OUT;
-        //e.io_id = act->output_id; // ?????
+        e.io_id = 0xFF;
         e.state = false;
         e.timer = 0;
-        e.node = act->target_node;        
+        //e.node = act->target_node;        
+        memcpy(e.node.mac, self_node, 6);            
         e.outputsStates = getOutputs();
         e.inputStates = getInputs();
         if (ioevent) ioevent(e);
-        sendNodeAction(act);    
+        if (memcmp(act->target_node.mac, self_node, 6)) 
+            sendNodeAction(act); // не слать самому себе
         return;
     }
-
 
     if (isLocalNode(&act->target_node)) {        
         output_cfg_t *output = findOutput(act->output_id);
@@ -844,14 +845,18 @@ void setOutput(action_cfg_t *act) {
             case ACT_TOGGLE:
                 output->is_on = !output->is_on;
                 break;
-            case ACT_ALLOFF:
-                // TODO : realize it    
-                     
-                break;
+            // case ACT_ALLOFF:
+            //     // TODO : realize it
+            //     break;
             default:
                 break;            
         }      
         
+        if (output->type == OUTPUT_TIMED) {
+            // set initial value            
+            output->timer = output->is_on ? output->timed.on_sec : output->timed.off_sec;
+        }
+
         // publish to core
         io_event_t e;
         e.io_type = IO_OUT;
@@ -881,14 +886,10 @@ void actionsTask(void *pvParameter) {
     uint16_t durationCnt = 0;
     uint8_t i = 0;
     while (1) {
-        if (i >= evt->actions_count)
-            break;
-
         if (durationCnt) {
             durationCnt--;            
             vTaskDelay(1000 / portTICK_PERIOD_MS);
         } else {
-            //action_cfg_t *act = &cfg_actions(gCfg)[evt->actions_offset + i];            
             action_cfg_t *act = getConfigAction(evt->actions_offset + i);
             
             //ESP_LOGI(TAG, "process action %d output %d", act->action, act->output_id);            
@@ -901,8 +902,9 @@ void actionsTask(void *pvParameter) {
                     setOutput(act);                
                 }
             }
-        }            
-        i++;
+        }
+        if (++i >= evt->actions_count)
+            break;
     }
     vTaskDelete(NULL);
 }
@@ -944,7 +946,45 @@ uint8_t correctInput(uint8_t pInput) {
     return cInput;
 }
 
+void processInputEvent(event_type_t event, uint8_t inputId) {
+    // обработка событий входа, постановка действий
+    input_cfg_t *input = findInput(inputId);
+    if (input == NULL) {
+        ESP_LOGE(TAG, "No input found in config");
+        return;
+    }
+    
+    // const io_cfg_t *cfg = gCfg;    
+    const input_event_cfg_t *evt = NULL;
+    for (uint8_t i = 0; i < input->events_count; i++) {
+        const input_event_cfg_t *e = getConfigEvent(input->events_offset + i);    
+        if (e->event == event) {
+            evt = e;
+            break;
+        }
+    }
+
+    if(evt == NULL) {
+        ESP_LOGE(TAG, "No event in config for input %d, event %s", inputId, eventStr(event));
+        return;
+    }
+
+    ESP_LOGI(TAG, "Input %d event %s → %d actions", inputId, eventStr(event), evt->actions_count);
+
+    if (evt != NULL && evt->actions_count > 0) {
+        char taskName[MAXTASKNAME];
+        snprintf(taskName, MAXTASKNAME, "actiontask_%d", inputId);
+        TaskHandle_t xHandle = xTaskGetHandle(taskName);
+        if (xHandle != NULL) {
+            // если по данному входу уже работает таск то удалить его
+            vTaskDelete(xHandle);
+        }    
+        xTaskCreate(&actionsTask, taskName, 4096, (void *)evt, 5, NULL);
+    }    
+}
+
 void processInput(uint8_t input_id, uint8_t event_id) {
+    // обработка изменения состояния регистров входа, определение типа события (нажатие/отжатие кнопки, переключение входа)
     // find config entity    
     uint8_t inputId = correctInput(input_id);
     ESP_LOGI(TAG, "processInput. orig %d, corrected %d", input_id, inputId);
@@ -953,6 +993,7 @@ void processInput(uint8_t input_id, uint8_t event_id) {
         ESP_LOGE(TAG, "No input found in config");
         return;
     }
+    input->is_on = event_id;
     event_type_t event = EVT_UNKNOWN;
 
     switch (input->type) {
@@ -972,7 +1013,7 @@ void processInput(uint8_t input_id, uint8_t event_id) {
                 ESP_LOGI(TAG, "Button %d %s", inputId, eventStr(event)); 
             }
             break;
-        case INPUT_SWITCH_INV:
+        case INPUT_SWITCH_INV:            
             // TODO : переключатель со счетчиком. для Саши делали. 
             event = EVT_TOGGLE;        
             break;
@@ -985,9 +1026,8 @@ void processInput(uint8_t input_id, uint8_t event_id) {
         default:
             event = EVT_UNKNOWN;
     }
-    
-    // process events
-    if (event != EVT_UNKNOWN) {        
+
+    if (event != EVT_UNKNOWN) {
         // publish core only for switches and inverted switches
         if (input->type == INPUT_SWITCH || input->type == INPUT_SWITCH_INV) {
             // sending current state to bus
@@ -1005,51 +1045,18 @@ void processInput(uint8_t input_id, uint8_t event_id) {
             memcpy(e.node.mac, self_node, 6);
             if (ioevent) ioevent(e);
         }
-        
-        // const io_cfg_t *cfg = gCfg;    
-        const input_event_cfg_t *evt = NULL;
-        for (uint8_t i = 0; i < input->events_count; i++) {
-            // const input_event_cfg_t *e =
-            //     &cfg->events[input->events_offset + i];
-            // const input_event_cfg_t *e =
-            //     &cfg_events(gCfg)[input->events_offset + i];                    
-            const input_event_cfg_t *e = getConfigEvent(input->events_offset + i);    
-            if (e->event == event) {
-                evt = e;
-                break;
-            }
-        }
 
-        if(evt == NULL) {
-            ESP_LOGE(TAG, "No event in config for input %d, event %s", inputId, eventStr(event));
-            return;
-        }
-
-        ESP_LOGI(TAG, "Input %d event %s → %d actions", inputId, eventStr(event), evt->actions_count);
-
-        if (evt != NULL && evt->actions_count > 0) {
-            char taskName[MAXTASKNAME];
-            snprintf(taskName, MAXTASKNAME, "actiontask_%d", inputId);
-            TaskHandle_t xHandle = xTaskGetHandle(taskName);
-            if (xHandle != NULL) {
-                // если по данному входу уже работает таск то удалить его
-                vTaskDelete(xHandle);
-            }    
-            xTaskCreate(&actionsTask, taskName, 4096, (void *)evt, 5, NULL);
-        }
+        processInputEvent(event, inputId);
     }
-}
+}    
 
 void outputTimer() {        
-    // if (!gCfg) return;    
-    // const io_cfg_t *cfg = gCfg;  
     uint8_t outputsCount = getConfigOutputsCount();  
     for (uint8_t i = 0; i < outputsCount; i++) {
-        //output_cfg_t *o = &cfg->outputs[i];        
-        //output_cfg_t *o = &cfg_outputs(gCfg)[i];                
         output_cfg_t *o = getConfigOutput(i);
         if (o->type == OUTPUT_TIMED) {
-            if (--o->timer == 0) {
+            ESP_LOGI(TAG, "output %d, timer %d", o->id, o->timer);
+            if (--o->timer == 0) {                
                 if (o->is_on) {                
                     o->is_on = false;
                     o->timer = o->timed.off_sec;
@@ -1058,8 +1065,24 @@ void outputTimer() {
                     o->timer = o->timed.on_sec;
                 }
             }
+            // publish to core
+            io_event_t e;
+            e.io_type = IO_OUT;
+            e.io_id = o->id;
+            e.state = o->is_on;
+            e.timer = o->timer;  
+            mempcpy(e.node.mac, self_node, 6);            
+            e.outputsStates = getOutputs();
+            e.inputStates = getInputs();
+            if (ioevent) ioevent(e);
         }
     }
+}
+
+void processScheduler() {
+    /*
+    
+    */
 }
 
 void IOTask() {
@@ -1102,11 +1125,10 @@ void IOTask() {
                 cnt_timer = 0;
                 outputTimer();
 
-                // if (++sch_timer >= 60) {
-                //     sch_timer = 0;
-                //     processScheduler();
-                //     sendInfo();
-                // }
+                if (++sch_timer >= 60) {
+                    sch_timer = 0;
+                    processScheduler();                
+                }
             }
 
             uint16_t outs = getOutputs();
@@ -1148,23 +1170,6 @@ void initHardware() {
     
     xTaskCreate(&hwTask, "hwTask", 4096, NULL, 5, NULL);    
 }
-
-// void testTask() {
-//     vTaskDelay(4000 / portTICK_PERIOD_MS);
-//     while (1) {
-//         // action_cfg_t ac;
-//         // ac.action = ACT_TOGGLE;
-//         // ac.output_id = 0;
-//         // #define TRG  ((node_uid_t){ .mac = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff} })
-//         // ac.target_node = TRG;
-//         // sendNodeAction(&ac);
-//         input_event_t ev;
-//         ev.input_id = 0;
-//         ev.event = EVT_TOGGLE;
-//         sendNodeEvent(ev);
-//         vTaskDelay(10000 / portTICK_PERIOD_MS);
-//     }    
-// }
 
 void registerIOHandler(TIOEvent event) {
     ioevent = event;

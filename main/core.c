@@ -214,8 +214,33 @@ esp_err_t setLed(char **response, char *content) {
     uint16_t g = cJSON_GetObjectItem(parent, "g")->valueint;
     uint16_t b = cJSON_GetObjectItem(parent, "b")->valueint;    
     setRGBFaceValue(r, g, b);
-    setTextJson(response, "OK");    
+    setTextJson(response, "OK");
     cJSON_Delete(parent);
+    return ESP_OK;
+}
+
+esp_err_t doOta(char **response, char *content) {
+    if (content == NULL || (strncmp(content, "ws://", 5) == 0 && strncmp(content, "wss://", 6) == 0)) {
+        setErrorTextJson(response, "Is not a valid ws address");
+        return ESP_FAIL;
+    }
+    char *res = startOTA(content);
+    if (!strcmp(res, "OK")) {
+        setTextJson(response, "OK");
+        return ESP_OK;
+    }
+    setErrorTextJson(response, res);
+    return ESP_FAIL;    
+}
+
+esp_err_t editConfig(httpd_req_t *req) {    
+    extern const char config_start[] asm("_binary_config_html_start");
+    extern const char config_end[] asm("_binary_config_html_end");
+
+    const uint32_t config_len = config_end - config_start;
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, config_start, config_len);
+    
     return ESP_OK;
 }
 
@@ -237,8 +262,14 @@ esp_err_t uiRouter(httpd_req_t *req) {
                     xSemaphoreGive(gMutex);
                 }
             }
-        }          
-        // TODO : OTA service with external URL  
+        }
+    } else if (!strcmp(uri, "/service/ota")) {
+        if (req->method == HTTP_POST) {
+            err = getContent(&content, req);
+            if (err == ESP_OK) {
+                err = doOta(&response, content);
+            }
+        }                      
     } else if (!strcmp(uri, "/service/testled")) {
         if (req->method == HTTP_POST) {
             err = getContent(&content, req);
@@ -249,6 +280,10 @@ esp_err_t uiRouter(httpd_req_t *req) {
                 }
             }
         }            
+    } else if (!strcmp(uri, "/service/editconfig")) {
+        if (req->method == HTTP_GET) {
+            err = editConfig(req);
+        } 
     }
     //free(response);
     if (err == ESP_OK) {
@@ -298,11 +333,6 @@ static void setOnline(bool online) {
     wsConnected = online;
     sendNodeStatus(online);
 }
-
-typedef struct __attribute__((packed)) {
-    uint8_t msg_type;
-    uint8_t payload[];
-} ws_event_t;
 
 void sendEvent(io_event_t event) {
     // AA 0E NODE TT ID SS TMR ISlow IShi OSlow OShi
@@ -384,6 +414,8 @@ void BusHandler(bus_event_t event) {
             if (!event.online) {
                 // only for offline node                
                 sendEvent(event.io_event);
+                ESP_LOGI(TAG, "bus event. id %d, outputs %d, inputs %d",
+                event.io_event.io_id, event.io_event.outputsStates, event.io_event.inputStates);
                 // sendEvent(event.io_event.node.mac, event.io_event.io_type, event.io_event.io_id,
                 //     event.io_event.state, event.io_event.timer, event.outputStates, event.inputStates);                
             }
@@ -419,6 +451,7 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
             break;
         case WS_EVENT_DATA:
             ESP_LOGI(TAG, "WebSocket data received. Len %d", len);
+            if (getConfigValueBool("debug")) ESP_LOG_BUFFER_HEXDUMP("WS DATA", data, len, CONFIG_LOG_DEFAULT_LEVEL);
             if (data != NULL && len > 0) {
                 switch (data[0]) {
                     case 0xBB: // hello from server
@@ -448,17 +481,22 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
                         break;
                     case 'A': // Action from cloud
                         // 0   1  2-7   8       9     10    11-12
-                        // AA  A  NODE  OUT/IN  ID  ACTION  CRC16
-                        if (data[7] == 0) {
+                        // AA  A  NODE  OUT/IN  ID  ACTION  CRC16                        
+                        node_uid_t node;
+                        memcpy(node.mac, data+1, 6);                 
+                        if (data[7] == 0) { // output action
                             // output
                             action_cfg_t act;
                             act.output_id = data[8];
                             act.action = data[9];
                             memcpy(act.target_node.mac, &data[1], 6);
                             setOutput(&act);
+                        } else if (isLocalNode(&node)) {
+                            // обработка кнопок с фронта
+                            processInputEvent(data[9], data[8]);                            
                         } else {
-                            // input - not supported for now
-                            ESP_LOGW(TAG, "Input action from cloud not supported");
+                            ESP_LOGI(TAG, "other action not implemened");
+                            // action already worked correctly, but button action to remote node not yet
                         }
                         break;
                     case 0xC0: // command
@@ -495,9 +533,9 @@ static void wsHandler(ws_event_id_t event, const uint8_t *data, uint32_t len) {
 }
 
 void initWS() {
-    if (getConfigValueBool("network/cloud/enabled")) {
-        //WSinit(getConfigValueString("network/cloud/address"), &wsEvent, getConfigValueBool("network/cloud/log"));            
-        WSinit("ws://192.168.4.120:8888/ws", &wsHandler, getConfigValueBool("network/cloud/log"));            
+    if (getConfigValueBool("network/cloud/enabled")) {        
+        //WSinit("ws://192.168.4.120:8888/ws", &wsHandler, getConfigValueBool("network/cloud/log"));            
+        WSinit(getConfigValueString("network/cloud/address"), &wsHandler, getConfigValueBool("network/cloud/log"));            
     }
 }
 

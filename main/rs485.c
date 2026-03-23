@@ -280,6 +280,11 @@ char *printFrame(frame_t *f) {
 
 static void rs485_send(uint8_t *dst, msg_type_t type, void *payload, uint16_t len, uint16_t msg_id) {
     // check for node exists in nodes list
+    if (!memcmp(dst, self_node.mac, 6)) {
+        ESP_LOGE(TAG, "Packet for yourself!");
+        return; // packet to self
+    }
+
     if (!mac_equal(dst, (uint8_t*)BROADCAST_MAC)) {
         bool node_found = false;
         for (int i = 0; i < node_count; i++) {

@@ -166,7 +166,22 @@ typedef struct __attribute__((packed)) {
     uint8_t state;
 } node_io_event_t;
 
-//extern io_cfg_t *gCfg;
+typedef struct __attribute__((packed)) {
+    uint8_t dow; // 0 - monday
+    uint8_t grace;
+    uint16_t time;
+    bool done;
+    bool enabled;
+    uint8_t actions_count;
+    uint8_t actions[];
+} task_t;
+
+typedef struct __attribute__((packed)) {
+    io_type_t io_type; // input or output   
+    io_action_t ioaction; // for output simple purpouse
+    
+} task_action_t;
+
 // config accessors
 input_cfg_t *findInput(uint8_t input_id);
 output_cfg_t *findOutput(uint8_t output_id);

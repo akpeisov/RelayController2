@@ -4,5 +4,7 @@ openssl genrsa -out jwtRS256.key 2048
 generate public key
 openssl rsa -in jwtRS256.key -pubout -outform PEM -out jwtRS256.key.pub
 
+публичный вставляется в енвы бэка и все, в киклоке не участвует
+
 git config --global user.email "you@example.com"
   git config --global user.name "Your Name" E4E6-5D2E

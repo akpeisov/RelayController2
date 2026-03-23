@@ -225,6 +225,8 @@ if (!validateConfig(cfg)) {
 
         if (o->type == OUTPUT_SIMPLE) {
             printf(" limit=%us", o->simple.limit_sec);
+        } else if (o->type == OUTPUT_TIMED) {
+            printf(" on=%us, off=%us", o->timed.on_sec, o->timed.off_sec);
         }
 
         printf("\n");
@@ -321,9 +323,6 @@ void loadBConfig() {
     } else {
         ESP_LOGE(TAG, "Failed to load config. Making default config");
         gCfg = makeDefaultConfig();        
-        // if (saveFile(fileName, (const uint8_t*)gCfg, getConfigSize(gCfg)) != ESP_OK) {
-        //     ESP_LOGE(TAG, "Failed to save config");     
-        // }
         saveBConfig(gCfg);
     }
     free(loadedBuf);
@@ -331,13 +330,18 @@ void loadBConfig() {
 
     dumpIoConfig(gCfg);
 
-    //ESP_LOG_BUFFER_HEXDUMP("cfg", (const uint8_t*)gCfg, getConfigSize(gCfg), CONFIG_LOG_DEFAULT_LEVEL);  
-    // return;
-    // gCfg = makeDefaultConfig();        
-    // if (saveFile(fileName, (const uint8_t*)gCfg, getConfigSize(gCfg)) != ESP_OK) {
-    //     ESP_LOGE(TAG, "Failed to save config");     
-    // }
-    // temp
+    // set initial output values
+    uint8_t outputsCount = getConfigOutputsCount();        
+    for (uint8_t i = 0; i < outputsCount; i++) {        
+        output_cfg_t *o = getConfigOutput(i);
+        o->is_on = o->def_value;
+        if (o->type == OUTPUT_TIMED) {
+            // set initial value            
+            o->timer = o->is_on ? o->timed.on_sec : o->timed.off_sec;
+        } else {
+            o->timer = 0;
+        }
+    }
 }
 
 input_cfg_t *findInput(uint8_t input_id) {
@@ -403,7 +407,6 @@ output_cfg_t *getConfigOutput(uint8_t i) {
         ESP_LOGE(TAG, "Failed to take config mutex");
         return NULL;
     }
-    //return &cfg_outputs(gCfg)[i];
 }
 
 uint8_t getConfigInputsCount() {
@@ -414,8 +417,7 @@ uint8_t getConfigInputsCount() {
     } else {
         ESP_LOGE(TAG, "Failed to take config mutex");
         return 0;
-    }
-    //return gCfg ? gCfg->inputs_count : 0;
+    }    
 }
 
 input_cfg_t *getConfigInput(uint8_t i) {
@@ -427,7 +429,6 @@ input_cfg_t *getConfigInput(uint8_t i) {
         ESP_LOGE(TAG, "Failed to take config mutex");
         return NULL;
     }
-    //return &cfg_inputs(gCfg)[i];
 }
 
 action_cfg_t *getConfigAction(uint16_t offset) {
@@ -439,7 +440,6 @@ action_cfg_t *getConfigAction(uint16_t offset) {
         ESP_LOGE(TAG, "Failed to take config mutex");
         return NULL;
     }
-    //return &cfg_actions(gCfg)[offset];
 }
 
 input_event_cfg_t *getConfigEvent(uint16_t offset) {
@@ -451,7 +451,6 @@ input_event_cfg_t *getConfigEvent(uint16_t offset) {
         ESP_LOGE(TAG, "Failed to take config mutex");
         return NULL;
     }
-    //return &cfg_events(gCfg)[offset];
 }
 
 const char *eventStr(event_type_t event) {
